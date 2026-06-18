@@ -339,13 +339,41 @@ class Project(db.Model):
     ]
 
     @classmethod
-    def published_for_tenant(cls, tenant_id: int):
-        """Tenant-scoped published projects ordered for display."""
-        return (
-            cls.query
-            .filter_by(status='published', tenant_id=tenant_id)
-            .order_by(cls.is_featured.desc(), cls.order.asc(), cls.created_at.desc())
-        )
+    def published_for_tenant(cls, tenant):
+        q = cls.query.filter_by(status='published')
+
+        if isinstance(tenant, int):
+            return q.filter_by(tenant_id=tenant).order_by(
+                cls.is_featured.desc(),
+                cls.order.asc(),
+                cls.created_at.desc(),
+            )
+
+        if isinstance(tenant, str):
+            t = tenant.strip().lower()
+            try:
+                tenant_id = int(t)
+                return q.filter_by(tenant_id=tenant_id).order_by(
+                    cls.is_featured.desc(),
+                    cls.order.asc(),
+                    cls.created_at.desc(),
+                )
+            except (TypeError, ValueError):
+                pass
+
+            from app.models.core import Tenant
+
+            tenant_record = Tenant.query.filter_by(slug=t, status='active').first()
+            if not tenant_record:
+                return cls.query.filter(False)
+
+            return q.filter_by(tenant_id=tenant_record.id).order_by(
+                cls.is_featured.desc(),
+                cls.order.asc(),
+                cls.created_at.desc(),
+            )
+
+        return cls.query.filter(False)
 
     @property
     def is_published(self) -> bool:

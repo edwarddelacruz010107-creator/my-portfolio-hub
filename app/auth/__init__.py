@@ -92,7 +92,10 @@ def _get_redis_client():
         if not redis_url:
             return None
         import redis
-        client = redis.from_url(redis_url, socket_connect_timeout=2, socket_timeout=2)
+        kwargs = {"socket_connect_timeout": 2, "socket_timeout": 2}
+        if redis_url.startswith("rediss://"):
+            kwargs["ssl_cert_reqs"] = None
+        client = redis.from_url(redis_url, **kwargs)
         client.ping()
         return client
     except Exception:

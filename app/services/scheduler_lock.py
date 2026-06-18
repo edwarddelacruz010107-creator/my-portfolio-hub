@@ -45,14 +45,13 @@ def acquire_scheduler_lock(app) -> bool:
     # 2. PostgreSQL advisory lock (best-effort; skipped for SQLite)
     try:
         from app import db
-        dialect = db.engine.dialect.name
-        if dialect == 'postgresql':
-            # Lock ID 7919 = arbitrary prime, unique to this application
-            SCHEDULER_LOCK_ID = 7919
-            with app.app_context():
+        with app.app_context():
+            dialect = db.engine.dialect.name
+            if dialect == 'postgresql':
+                SCHEDULER_LOCK_ID = 7919
                 result = db.session.execute(
                     db.text("SELECT pg_try_advisory_lock(:lock_id)"),
-                    {"lock_id": SCHEDULER_LOCK_ID}
+                    {"lock_id": SCHEDULER_LOCK_ID},
                 ).scalar()
                 db.session.remove()
                 if result:
@@ -62,22 +61,23 @@ def acquire_scheduler_lock(app) -> bool:
                         SCHEDULER_LOCK_ID,
                     )
                     return True
-                else:
-                    logger.info(
-                        'Scheduler PG advisory lock NOT acquired (lock_id=%d). '
-                        'Another worker holds the lock — this worker will skip APScheduler.',
-                        SCHEDULER_LOCK_ID,
-                    )
-                    # Release our in-process claim too
-                    with _process_lock:
-                        _scheduler_claimed = False
-                    return False
+
+                logger.info(
+                    'Scheduler PG advisory lock NOT acquired (lock_id=%d). '
+                    'Another worker holds the lock — this worker will skip APScheduler.',
+                    SCHEDULER_LOCK_ID,
+                )
+                with _process_lock:
+                    _scheduler_claimed = False
+                return False
     except Exception as exc:
         logger.warning(
             'Scheduler PG advisory lock attempt failed (%s) — '
-            'falling back to in-process lock only. '
-            'Ensure ENABLE_SCHEDULER=true is only set on ONE worker.',
+            'scheduler will remain disabled in this worker.',
             exc,
         )
+        with _process_lock:
+            _scheduler_claimed = False
+        return False
     
     return True
