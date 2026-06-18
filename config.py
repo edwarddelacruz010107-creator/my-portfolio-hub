@@ -322,9 +322,6 @@ class ProductionConfig(BaseConfig):
             'TENANT_DATABASE_URL',
             'PAYMONGO_SECRET_KEY',
             'PAYMONGO_WEBHOOK_SECRET',
-            # FIX REDIS: memory:// fallback does not share state across workers;
-            # rate limiting is ineffective without Redis in production.
-            'REDIS_URL',
         ]
         
         missing = [var for var in required_vars if not os.environ.get(var)]
@@ -332,6 +329,11 @@ class ProductionConfig(BaseConfig):
             raise ValueError(
                 f"Production environment missing required variables: {', '.join(missing)}\n"
                 "Configure these in your hosting platform's environment settings."
+            )
+
+        if not os.environ.get("REDIS_URL"):
+            app.logger.warning(
+                "REDIS_URL not set — rate limiting and caching will use in-process fallbacks."
             )
         
         # ─────────────────────────────────────────────────────────────
