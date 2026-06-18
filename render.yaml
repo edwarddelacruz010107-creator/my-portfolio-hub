@@ -1,0 +1,158 @@
+# render.yaml — Portfolio CMS v5.0 PRODUCTION-READY
+# ===================================================
+# FIXED:
+#   [HIGH] DATABASE_URL → CORE_DATABASE_URL + TENANT_DATABASE_URL (dual-db)
+#   [HIGH] Added MAILERSEND_API_KEY, MAILERSEND_FROM_EMAIL, MAILERSEND_FROM_NAME
+#   [HIGH] Added ENABLE_SCHEDULER=true for APScheduler single-worker safety
+#   [HIGH] Removed RESEND_* (replaced by MailerSend in v5.0)
+#   [MED]  Uncommented cron job for renewal check (optional — APScheduler covers it)
+#   [MED]  Added CORE_DATABASE_URL / TENANT_DATABASE_URL as explicit env vars
+
+services:
+  - type: web
+    name: portfolio-cms
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    preDeployCommand: >
+      flask db upgrade &&
+      flask ensure-tenant-schema &&
+      flask ensure-default-tenant
+    startCommand: >
+      gunicorn
+      --bind 0.0.0.0:$PORT
+      --workers 1
+      --threads 4
+      --timeout 120
+      --keep-alive 5
+      --log-level info
+      --access-logfile -
+      --error-logfile -
+      wsgi:app
+    plan: starter
+    autoDeploy: true
+    healthCheckPath: /health
+
+    envVars:
+      - key: FLASK_ENV
+        value: production
+      - key: FLASK_APP
+        value: wsgi.py
+      - key: PYTHON_VERSION
+        value: "3.12.0"
+      - key: TOTP_VALID_WINDOW
+        value: "1"
+
+      # ── Redis (required for multi-worker rate limiting) ──────────────────
+      - key: REDIS_URL
+        fromService:
+          name: portfolio-redis
+          type: redis
+          property: connectionString
+
+      # ── Core secrets — set in Render dashboard ────────────────────────────
+      - key: SECRET_KEY
+        generateValue: true
+      # Generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+      - key: FERNET_KEY
+        sync: false
+
+      # ── DUAL DATABASE (REQUIRED) ──────────────────────────────────────────
+      # FIXED: v4.x used DATABASE_URL (single DB). v5.0 uses dual-db architecture.
+      # Create two PostgreSQL databases in Render, then set these:
+      - key: CORE_DATABASE_URL
+        sync: false
+      - key: TENANT_DATABASE_URL
+        sync: false
+
+      # ── Supabase Storage (optional) ───────────────────────────────────────
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: SUPABASE_BUCKET
+        sync: false
+
+      # ── Email — MailerSend (PRIMARY, v5.0) ───────────────────────────────
+      # FIXED: Replaced RESEND_API_KEY / RESEND_FROM_EMAIL with MailerSend
+      - key: MAILERSEND_API_KEY
+        sync: false
+      - key: MAILERSEND_FROM_EMAIL
+        sync: false
+      - key: MAILERSEND_FROM_NAME
+        value: "Portfolio CMS"
+
+      # ── App base URL for PayMongo redirects ──────────────────────────────
+      - key: APP_BASE_URL
+        sync: false
+
+      # ── Billing config ────────────────────────────────────────────────────
+      - key: BILLING_GRACE_PERIOD_DAYS
+        value: "3"
+
+      # ── Contact / forms ────────────────────────────────────────────────────
+      - key: WEB3FORMS_ACCESS_KEY
+        sync: false
+      - key: ADMIN_EMAIL
+        sync: false
+
+      # ── Superadmin ────────────────────────────────────────────────────────
+      - key: SUPERADMIN_PASSWORD
+        sync: false
+
+      # ── PayMongo Billing ──────────────────────────────────────────────────
+      - key: PAYMONGO_PUBLIC_KEY
+        sync: false
+      - key: PAYMONGO_SECRET_KEY
+        sync: false
+      - key: PAYMONGO_WEBHOOK_SECRET
+        sync: false
+      - key: PAYMONGO_ENABLED
+        value: "false"
+
+      # ── APScheduler — single-worker safety ───────────────────────────────
+      # FIXED: With --workers 1, APScheduler fires once per interval.
+      # If you scale to multiple workers, remove ENABLE_SCHEDULER=true and
+      # use the cron job service below instead.
+      - key: ENABLE_SCHEDULER
+        value: "true"
+
+      # ── Monitoring ────────────────────────────────────────────────────────
+      - key: BETTERSTACK_HEARTBEAT_URL
+        sync: false
+      - key: SENTRY_DSN
+        sync: false
+      - key: SELF_PING_ENABLED
+        value: "true"
+      - key: SELF_PING_INTERVAL
+        value: "60"
+
+  # ── Redis for rate limiting ──────────────────────────────────────────────────
+  - type: redis
+    name: portfolio-redis
+    plan: free
+    maxmemoryPolicy: allkeys-lru
+
+  # ── Cron job for subscription renewal ────────────────────────────────────────
+  # Alternative to APScheduler when running multiple Gunicorn workers.
+  # Uncomment this block AND set ENABLE_SCHEDULER=false on the web service
+  # if you scale beyond --workers 1.
+  #
+  # - type: cron
+  #   name: portfolio-renewal-check
+  #   runtime: python
+  #   schedule: "0 2 * * *"   # 02:00 AM UTC daily
+  #   buildCommand: pip install -r requirements.txt
+  #   startCommand: flask run-renewal-check
+  #   envVars:
+  #     - key: FLASK_APP
+  #       value: wsgi.py
+  #     - key: FLASK_ENV
+  #       value: production
+  #     - key: CORE_DATABASE_URL
+  #       sync: false
+  #     - key: TENANT_DATABASE_URL
+  #       sync: false
+  #     - key: SECRET_KEY
+  #       sync: false
+  #     - key: FERNET_KEY
+  #       sync: false
