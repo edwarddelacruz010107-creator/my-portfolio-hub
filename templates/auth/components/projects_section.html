@@ -17,7 +17,7 @@
                 <article class="project-card reveal-up" style="--delay: {{ loop.index0 * 0.1 }}s">
                     <div class="project-image">
                         <img 
-                            src="{% if project.image %}{{ url_for('static', filename='uploads/projects/' + project.image) }}{% else %}https://picsum.photos/seed/project{{ project.id }}/600/400{% endif %}" 
+                            src="{% if project.image %}{{ url_for('static', filename='uploads/projects/' + project.image) }}{% else %}{{ url_for('static', filename='image/project_placeholder.svg') }}{% endif %}" 
                             alt="{{ project.title }}"
                         >
                         <div class="project-overlay">

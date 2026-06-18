@@ -23,9 +23,17 @@
     {% set og_image_url = '' %}
     {% if profile %}
       {% if profile.og_image %}
-        {% set og_image_url = request.host_url ~ 'static/uploads/profiles/' ~ profile.og_image %}
+        {% if profile.og_image.startswith('http') %}
+          {% set og_image_url = profile.og_image %}
+        {% else %}
+          {% set og_image_url = url_for('static', filename='uploads/profiles/' ~ profile.og_image, _external=True) %}
+        {% endif %}
       {% elif profile.profile_image %}
-        {% set og_image_url = request.host_url ~ 'static/uploads/profiles/' ~ profile.profile_image %}
+        {% if profile.profile_image.startswith('http') %}
+          {% set og_image_url = profile.profile_image %}
+        {% else %}
+          {% set og_image_url = url_for('static', filename='uploads/profiles/' ~ profile.profile_image, _external=True) %}
+        {% endif %}
       {% endif %}
     {% endif %}
     <meta property="og:type"        content="profile">
@@ -114,7 +122,7 @@
             "description": "{{ (project.description_short or project.description or '') | striptags | truncate(150) | e }}",
             "url": "{{ url_for('tenant.project_detail', tenant_slug=tenant_slug, slug=project.slug, _external=True) }}"
             {% if project.image %},
-            "image": "{{ request.host_url }}static/uploads/projects/{{ project.image }}"
+            "image": "{{ url_for('static', filename='uploads/projects/' ~ project.image, _external=True) }}"
             {% endif %}
           }
         }{% if not loop.last %},{% endif %}
@@ -144,6 +152,7 @@
 
     <!-- Iconify Icons -->
     <script src="https://code.iconify.design/iconify-icon/1.0.7/iconify-icon.min.js" defer></script>
+    <script src="https://unpkg.com/iconify-icon@1.0.7/dist/iconify-icon.min.js" defer></script>
 
     <!-- Custom Stylesheet -->
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
@@ -175,7 +184,7 @@
                 <li><a href="#hero" class="nav-link active" data-section="hero">Home</a></li>
                 <li><a href="#about" class="nav-link" data-section="about">About</a></li>
                 <li><a href="#projects" class="nav-link" data-section="projects">Projects</a></li>
-                <li><a href="#services" class="nav-link" data-section="services">Services</a></li>
+                {% if services %}<li><a href="#services" class="nav-link" data-section="services">Services</a></li>{% endif %}
                 {% if testimonials %}<li><a href="#testimonials" class="nav-link" data-section="testimonials">Testimonials</a></li>{% endif %}
                 <li><a href="#contact" class="nav-link" data-section="contact">Contact</a></li>
                 {% if profile and profile.tenant_slug == 'default' %}
@@ -218,7 +227,7 @@
                 <li><a href="#hero" class="mobile-nav-link" data-section="hero">Home</a></li>
                 <li><a href="#about" class="mobile-nav-link" data-section="about">About</a></li>
                 <li><a href="#projects" class="mobile-nav-link" data-section="projects">Projects</a></li>
-                <li><a href="#services" class="mobile-nav-link" data-section="services">Services</a></li>
+                {% if services %}<li><a href="#services" class="mobile-nav-link" data-section="services">Services</a></li>{% endif %}
                 {% if testimonials %}<li><a href="#testimonials" class="mobile-nav-link" data-section="testimonials">Testimonials</a></li>{% endif %}
                 <li><a href="#contact" class="mobile-nav-link" data-section="contact">Contact</a></li>
                 {% if profile and profile.tenant_slug == 'default' %}
@@ -248,7 +257,7 @@
                     <!-- Greeting Badge -->
                     <div class="hero-badge reveal-up">
                         <iconify-icon icon="lucide:sparkles" width="14"></iconify-icon>
-                        <span>{% if profile and profile.availability_status %}{{ profile.availability_status }}{% else %}Available for commissions projects{% endif %}</span>
+                        {% if profile and profile.availability_status %}<span>{{ profile.availability_status }}</span>{% endif %}
                     </div>
 
                     <!-- Main Heading -->
@@ -259,13 +268,15 @@
                     <!-- Typing Subtitle -->
                     <div class="hero-subtitle reveal-up" style="--delay: 0.2s">
                         <span class="typing-prefix">I'm a </span>
-                        <span class="typing-text" id="typingText"></span>
+                        <span class="typing-text" id="typingText" data-words="{% if profile and profile.hero_tagline %}{{ profile.hero_tagline }}{% elif profile and profile.title %}{{ profile.title }}{% endif %}"></span>
                         <span class="typing-cursor">|</span>
                     </div>
 
                     <!-- Description -->
                     <p class="hero-desc reveal-up" style="--delay: 0.3s">
-                        {% if profile and profile.subtitle %}{{ profile.subtitle }}{% else %}A passionate web developer crafting clean, responsive, and user-friendly digital experiences. I turn ideas into elegant solutions.{% endif %}
+                        {% if profile and profile.subtitle %}{{ profile.subtitle }}
+                        {% elif profile and profile.bio_short %}{{ profile.bio_short }}
+                        {% endif %}
                     </p>
 
                     <!-- CTA Buttons -->
@@ -306,7 +317,7 @@
                         <div class="hero-avatar-ring"></div>
                         <div class="hero-avatar-ring ring-2"></div>
                         <img 
-                            src="{% if profile and profile.profile_image %}{{ url_for('static', filename='uploads/profiles/' + profile.profile_image) }}{% else %}{{ url_for('static', filename='image/profile_img.jpg') }}{% endif %}" 
+                            src="{% if profile and profile.profile_image %}{{ profile.profile_image|upload_url('profiles') }}{% else %}{{ url_for('static', filename='image/profile_img.jpg') }}{% endif %}" 
                             alt="{% if profile %}{{ profile.name }}{% else %}Portfolio{% endif %}" 
                             class="hero-avatar"
                         >
@@ -349,32 +360,15 @@
                 <div class="about-grid">
                     <!-- About Text -->
                     <div class="about-text reveal-left">
-                        <h3 class="about-heading">
-                            {% if profile and profile.title %}{{ profile.title }}{% else %}Crafting Digital Experiences with Passion & Precision{% endif %}
-                        </h3>
+                        {% if profile and profile.title %}<h3 class="about-heading">{{ profile.title }}</h3>{% endif %}
                         {% if profile and profile.bio %}
                             <div class="about-bio">
                                 {% for paragraph in profile.bio.split('\n\n') %}
                                     <p>{{ paragraph }}</p>
                                 {% endfor %}
                             </div>
-                        {% else %}
-                            <p>
-                                I'm a dedicated web developer and Computer Science student based in 
-                                San Francisco. With over 3 years of hands-on experience, I specialize 
-                                in building modern, responsive websites and web applications that 
-                                deliver exceptional user experiences.
-                            </p>
-                            <p>
-                                My journey began with curiosity about how the web works, and it has 
-                                evolved into a deep passion for front-end development, UI/UX design, 
-                                and creating performant digital solutions. I believe in writing clean, 
-                                maintainable code and staying up-to-date with the latest technologies.
-                            </p>
-                            <p>
-                                When I'm not coding, you'll find me exploring new design trends, 
-                                contributing to open-source projects, or mentoring fellow developers.
-                            </p>
+                        {% elif profile and profile.bio_short %}
+                            <p>{{ profile.bio_short }}</p>
                         {% endif %}
 
                         <!-- Quick Info -->
@@ -425,73 +419,6 @@
                                         {% endfor %}
                                     </div>
                                 {% endfor %}
-                            {% else %}
-                                <!-- Fallback hardcoded skills -->
-                                <!-- Skill: HTML & CSS -->
-                                <div class="skill-item">
-                                    <div class="skill-header">
-                                        <span class="skill-name">HTML & CSS</span>
-                                        <span class="skill-percent">95%</span>
-                                    </div>
-                                    <div class="skill-bar">
-                                        <div class="skill-progress" data-width="95"></div>
-                                    </div>
-                                </div>
-
-                                <!-- Skill: JavaScript -->
-                                <div class="skill-item">
-                                    <div class="skill-header">
-                                        <span class="skill-name">JavaScript</span>
-                                        <span class="skill-percent">88%</span>
-                                    </div>
-                                    <div class="skill-bar">
-                                        <div class="skill-progress" data-width="88"></div>
-                                    </div>
-                                </div>
-
-                                <!-- Skill: React -->
-                                <div class="skill-item">
-                                    <div class="skill-header">
-                                        <span class="skill-name">React / Next.js</span>
-                                        <span class="skill-percent">82%</span>
-                                    </div>
-                                    <div class="skill-bar">
-                                        <div class="skill-progress" data-width="82"></div>
-                                    </div>
-                                </div>
-
-                                <!-- Skill: Node.js -->
-                                <div class="skill-item">
-                                    <div class="skill-header">
-                                        <span class="skill-name">Node.js</span>
-                                        <span class="skill-percent">72%</span>
-                                    </div>
-                                    <div class="skill-bar">
-                                        <div class="skill-progress" data-width="72"></div>
-                                    </div>
-                                </div>
-
-                                <!-- Skill: Python -->
-                                <div class="skill-item">
-                                    <div class="skill-header">
-                                        <span class="skill-name">Python</span>
-                                        <span class="skill-percent">68%</span>
-                                    </div>
-                                    <div class="skill-bar">
-                                        <div class="skill-progress" data-width="68"></div>
-                                    </div>
-                                </div>
-
-                                <!-- Skill: UI/UX Design -->
-                                <div class="skill-item">
-                                    <div class="skill-header">
-                                        <span class="skill-name">UI/UX Design</span>
-                                        <span class="skill-percent">78%</span>
-                                    </div>
-                                    <div class="skill-bar">
-                                        <div class="skill-progress" data-width="78"></div>
-                                    </div>
-                                </div>
                             {% endif %}
                         </div>
                     </div>
@@ -517,7 +444,7 @@
                         {% for project in featured_projects %}
                         <article class="project-card reveal-up" data-category="{{ project.category }}" style="--delay: {{ loop.index0 * 0.1 }}s">
                             <div class="project-image" style="position:relative;">
-                                <img src="{% if project.image %}{{ url_for('static', filename='uploads/projects/' + project.image) }}{% else %}https://picsum.photos/seed/project{{ project.id }}/600/400{% endif %}"
+                                <img src="{% if project.image %}{{ project.image|upload_url('projects') }}{% else %}{{ url_for('static', filename='image/project_placeholder.svg') }}{% endif %}"
                                      alt="{{ project.title }}">
                                 {% if project.view_count %}<span class="project-view-badge"><iconify-icon icon="lucide:eye" width="12"></iconify-icon> {{ project.view_count }}</span>{% endif %}
                                 <div class="project-overlay">
@@ -610,7 +537,7 @@
                     {% for project in other_projects %}
                     <article class="project-card reveal-up" data-category="{{ project.category }}" style="--delay: {{ loop.index0 * 0.1 }}s">
                         <div class="project-image">
-                            <img src="{% if project.image %}{{ url_for('static', filename='uploads/projects/' + project.image) }}{% else %}https://picsum.photos/seed/project{{ project.id }}/600/400{% endif %}"
+                            <img src="{% if project.image %}{{ project.image|upload_url('projects') }}{% else %}{{ url_for('static', filename='image/project_placeholder.svg') }}{% endif %}"
                                  alt="{{ project.title }}">
                             <div class="project-overlay">
                                 <div class="project-overlay-actions">
@@ -673,6 +600,7 @@
         {% endif %}
 
         <!-- ===================== SERVICES SECTION ===================== -->
+        {% if services %}
         <section id="services" class="section services">
             <div class="container">
                 <!-- Section Header -->
@@ -686,94 +614,28 @@
 
                 <!-- Services Grid -->
                 <div class="services-grid">
-                    {% if services %}
-                        {% for svc in services %}
-                        <div class="service-card reveal-up" style="--delay: {{ loop.index0 * 0.1 }}s">
-                            <div class="service-icon-wrapper">
-                                <iconify-icon icon="{{ svc.icon or 'lucide:briefcase' }}" width="28" class="service-icon"></iconify-icon>
-                            </div>
-                            <h3 class="service-title">{{ svc.title }}</h3>
-                            {% if svc.description %}
-                            <p class="service-desc">{{ svc.description }}</p>
-                            {% endif %}
-                            {% if svc.features_list %}
-                            <ul class="service-features">
-                                {% for feature in svc.features_list %}
-                                <li><iconify-icon icon="lucide:check" width="14"></iconify-icon> {{ feature }}</li>
-                                {% endfor %}
-                            </ul>
-                            {% endif %}
-                        </div>
-                        {% endfor %}
-                    {% else %}
-                    <!-- Fallback: no services configured yet -->
-                    <div class="service-card reveal-up" style="--delay: 0s">
+                    {% for svc in services %}
+                    <div class="service-card reveal-up" style="--delay: {{ loop.index0 * 0.1 }}s">
                         <div class="service-icon-wrapper">
-                            <iconify-icon icon="lucide:code-2" width="28" class="service-icon"></iconify-icon>
+                            <iconify-icon icon="{{ svc.icon or 'lucide:briefcase' }}" width="28" class="service-icon"></iconify-icon>
                         </div>
-                        <h3 class="service-title">Web Development</h3>
-                        <p class="service-desc">
-                            Building fast, responsive, and scalable websites using modern
-                            frameworks like React, Next.js, and vanilla JavaScript.
-                        </p>
+                        <h3 class="service-title">{{ svc.title }}</h3>
+                        {% if svc.description %}
+                        <p class="service-desc">{{ svc.description }}</p>
+                        {% endif %}
+                        {% if svc.features_list %}
                         <ul class="service-features">
-                            <li><iconify-icon icon="lucide:check" width="14"></iconify-icon> Single Page Apps</li>
-                            <li><iconify-icon icon="lucide:check" width="14"></iconify-icon> Progressive Web Apps</li>
-                            <li><iconify-icon icon="lucide:check" width="14"></iconify-icon> API Integration</li>
+                            {% for feature in svc.features_list %}
+                            <li><iconify-icon icon="lucide:check" width="14"></iconify-icon> {{ feature }}</li>
+                            {% endfor %}
                         </ul>
+                        {% endif %}
                     </div>
-
-                    <div class="service-card reveal-up" style="--delay: 0.1s">
-                        <div class="service-icon-wrapper">
-                            <iconify-icon icon="lucide:palette" width="28" class="service-icon"></iconify-icon>
-                        </div>
-                        <h3 class="service-title">UI/UX Design</h3>
-                        <p class="service-desc">
-                            Creating intuitive and visually appealing interfaces with a focus
-                            on user experience, accessibility, and modern design trends.
-                        </p>
-                        <ul class="service-features">
-                            <li><iconify-icon icon="lucide:check" width="14"></iconify-icon> Wireframing &amp; Prototyping</li>
-                            <li><iconify-icon icon="lucide:check" width="14"></iconify-icon> Design Systems</li>
-                            <li><iconify-icon icon="lucide:check" width="14"></iconify-icon> User Research</li>
-                        </ul>
-                    </div>
-
-                    <div class="service-card reveal-up" style="--delay: 0.2s">
-                        <div class="service-icon-wrapper">
-                            <iconify-icon icon="lucide:smartphone" width="28" class="service-icon"></iconify-icon>
-                        </div>
-                        <h3 class="service-title">Responsive Design</h3>
-                        <p class="service-desc">
-                            Ensuring every project looks perfect and functions flawlessly
-                            across all devices — from mobile phones to large desktops.
-                        </p>
-                        <ul class="service-features">
-                            <li><iconify-icon icon="lucide:check" width="14"></iconify-icon> Mobile-First Approach</li>
-                            <li><iconify-icon icon="lucide:check" width="14"></iconify-icon> Cross-Browser Testing</li>
-                            <li><iconify-icon icon="lucide:check" width="14"></iconify-icon> Fluid Layouts</li>
-                        </ul>
-                    </div>
-
-                    <div class="service-card reveal-up" style="--delay: 0.3s">
-                        <div class="service-icon-wrapper">
-                            <iconify-icon icon="lucide:zap" width="28" class="service-icon"></iconify-icon>
-                        </div>
-                        <h3 class="service-title">Performance Optimization</h3>
-                        <p class="service-desc">
-                            Maximizing website speed and efficiency through code optimization,
-                            lazy loading, caching strategies, and best practices.
-                        </p>
-                        <ul class="service-features">
-                            <li><iconify-icon icon="lucide:check" width="14"></iconify-icon> Core Web Vitals</li>
-                            <li><iconify-icon icon="lucide:check" width="14"></iconify-icon> SEO Optimization</li>
-                            <li><iconify-icon icon="lucide:check" width="14"></iconify-icon> Accessibility Audit</li>
-                        </ul>
-                    </div>
-                    {% endif %}
+                    {% endfor %}
                 </div>
             </div>
         </section>
+        {% endif %}
 
         <!-- ===================== TESTIMONIALS SECTION ===================== -->
         {% if testimonials %}
@@ -807,7 +669,7 @@
                                 <!-- Author -->
                                 <div class="testimonial-author">
                                     {% if t.author_avatar %}
-                                    <img src="{{ url_for('static', filename='uploads/profiles/' + t.author_avatar) }}"
+                                    <img src="{{ t.author_avatar|upload_url('profiles') }}"
                                          alt="{{ t.author_name }}" class="testimonial-avatar">
                                     {% else %}
                                     <div class="testimonial-avatar-placeholder">
@@ -856,9 +718,6 @@
         <section id="contact" class="section contact">
             <div class="container">
                 <!-- Section Header -->
-        <section id="contact" class="section contact">
-            <div class="container">
-                <!-- Section Header -->
                 <div class="section-header reveal-up">
                     <span class="section-tag">Get in Touch</span>
                     <h2 class="section-title">Contact <span class="gradient-text">Me</span></h2>
@@ -877,35 +736,41 @@
                         </p>
 
                         <div class="contact-details">
+                            {% if profile and profile.email %}
                             <div class="contact-detail-item">
                                 <div class="contact-detail-icon">
                                     <iconify-icon icon="lucide:mail" width="20"></iconify-icon>
                                 </div>
                                 <div>
                                     <span class="contact-detail-label">Email</span>
-                                    <span class="contact-detail-value">{% if profile and profile.email %}{{ profile.email }}{% else %}john@example.com{% endif %}</span>
+                                    <span class="contact-detail-value">{{ profile.email }}</span>
                                 </div>
                             </div>
+                            {% endif %}
 
+                            {% if profile and profile.location %}
                             <div class="contact-detail-item">
                                 <div class="contact-detail-icon">
                                     <iconify-icon icon="lucide:map-pin" width="20"></iconify-icon>
                                 </div>
                                 <div>
                                     <span class="contact-detail-label">Location</span>
-                                    <span class="contact-detail-value">{% if profile and profile.location %}{{ profile.location }}{% else %}San Francisco, CA{% endif %}</span>
+                                    <span class="contact-detail-value">{{ profile.location }}</span>
                                 </div>
                             </div>
+                            {% endif %}
 
+                            {% if profile and profile.availability_status %}
                             <div class="contact-detail-item">
                                 <div class="contact-detail-icon">
                                     <iconify-icon icon="lucide:clock" width="20"></iconify-icon>
                                 </div>
                                 <div>
                                     <span class="contact-detail-label">Availability</span>
-                                    <span class="contact-detail-value">{% if profile and profile.availability_status %}{{ profile.availability_status }}{% else %}Open to freelance{% endif %}</span>
+                                    <span class="contact-detail-value">{{ profile.availability_status }}</span>
                                 </div>
                             </div>
+                            {% endif %}
                         </div>
 
                         <!-- Social Links -->
