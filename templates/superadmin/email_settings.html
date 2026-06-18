@@ -1,0 +1,185 @@
+{% extends 'superadmin/base.html' %}
+{% block title %}Email &amp; Forms Settings{% endblock %}
+{% block page_title %}Email &amp; Forms Settings{% endblock %}
+
+{% block content %}
+<div class="breadcrumb-trail">
+  <a href="{{ url_for('superadmin.settings') }}" class="bc-link">
+    <iconify-icon icon="lucide:settings" width="14"></iconify-icon> Settings
+  </a>
+  <iconify-icon icon="lucide:chevron-right" width="14" class="bc-sep"></iconify-icon>
+  <span class="bc-current">Email &amp; Forms</span>
+</div>
+
+{# Status badges #}
+<div style="display:flex;gap:.75rem;flex-wrap:wrap;margin-bottom:1.5rem;">
+  <span class="tag-sm {{ 'tag-success' if has_mailersend else 'tag-warn' }}">
+    {{ '✓ MailerSend configured' if has_mailersend else '○ MailerSend API key not set' }}
+  </span>
+  <span class="tag-sm {{ 'tag-success' if cfg.recovery_enabled else 'tag-muted' }}">
+    {{ '✓ Recovery enabled' if cfg.recovery_enabled else '✗ Recovery disabled' }}
+  </span>
+</div>
+
+<form method="POST" action="{{ url_for('superadmin.email_settings') }}" autocomplete="off">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <input type="hidden" name="action" value="save">
+
+  <div class="content-grid" style="max-width:820px;">
+
+    {# ── EMAIL PROVIDER (MailerSend) ───────────────────────────────────────── #}
+    <div class="form-card">
+      <div class="form-card-header">
+        <iconify-icon icon="lucide:send" width="18"></iconify-icon>
+        <h3>Email Provider — MailerSend</h3>
+      </div>
+      <div class="form-card-body">
+        <p class="field-hint" style="margin-bottom:1.25rem;">
+          MailerSend handles all transactional emails: OTP codes, password reset,
+          welcome emails, subscription notifications, and payment alerts.
+          Get a free API key at <a href="https://www.mailersend.com" target="_blank" rel="noopener">mailersend.com</a>.
+          <strong>The API key is stored encrypted and is never sent to the browser.</strong>
+        </p>
+        <div class="form-group">
+          <label class="form-label" for="mailersend_api_key">
+            MailerSend API Key
+            {% if has_mailersend %}<span class="badge badge-success" style="margin-left:.5rem;">Configured</span>{% endif %}
+          </label>
+          <div class="input-group">
+            <input
+              type="password"
+              id="mailersend_api_key"
+              name="mailersend_api_key"
+              class="form-input"
+              autocomplete="new-password"
+              placeholder="{{ '●●●●●●●●  (set — enter new value to replace)' if has_mailersend else 'Paste your MailerSend API key' }}"
+            >
+            <button type="button" id="validateMailerSendBtn" class="btn btn-ghost btn-sm"
+                    style="white-space:nowrap;">
+              <iconify-icon icon="lucide:check-circle" width="14"></iconify-icon>
+              Validate
+            </button>
+          </div>
+          <span class="field-hint">Leave blank to keep the current key. Find your API key under <strong>API Tokens</strong> in the MailerSend dashboard.</span>
+        </div>
+        <div class="form-row-2">
+          <div class="form-group">
+            <label class="form-label" for="sender_name">Sender Display Name</label>
+            <input type="text" id="sender_name" name="sender_name" class="form-input"
+              value="{{ cfg.sender_name or '' }}" placeholder="Portfolio CMS" maxlength="200">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="sender_email">
+              From Email Address
+              <span class="field-hint" style="display:inline;">(must be a verified MailerSend domain)</span>
+            </label>
+            <input type="email" id="sender_email" name="sender_email" class="form-input"
+              value="{{ cfg.sender_email or '' }}" placeholder="noreply@yourdomain.com" maxlength="200">
+          </div>
+        </div>
+        <div id="mailersend-validate-result" style="display:none;margin-top:.75rem;"></div>
+      </div>
+    </div>
+
+    {# ── CONTACT FORM PROVIDER (Basin) ────────────────────────────────────── #}
+    <div class="form-card">
+      <div class="form-card-header">
+        <iconify-icon icon="lucide:layout-panel-top" width="18"></iconify-icon>
+        <h3>Contact Form Provider — Basin</h3>
+      </div>
+      <div class="form-card-body">
+        <p class="field-hint" style="margin-bottom:1.25rem;">
+          Basin (<a href="https://usebasin.com" target="_blank" rel="noopener">usebasin.com</a>)
+          handles portfolio contact form submissions per tenant.
+          Each tenant configures their own Basin endpoint in their admin settings.
+          <br>The default is <strong>Internal CMS</strong> — submissions are stored in the database.
+        </p>
+        <div class="form-row-2">
+          <div class="form-group">
+            <label class="form-label">Default Provider</label>
+            <select name="default_form_provider" class="form-input">
+              <option value="internal" {{ 'selected' if default_form_provider == 'internal' else '' }}>Internal CMS (default)</option>
+              <option value="basin"    {{ 'selected' if default_form_provider == 'basin' else '' }}>Basin</option>
+            </select>
+            <span class="field-hint">Applied to new tenants. Existing tenants use their own setting.</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    {# ── OTP & RECOVERY ───────────────────────────────────────────────────── #}
+    <div class="form-card">
+      <div class="form-card-header">
+        <iconify-icon icon="lucide:shield-check" width="18"></iconify-icon>
+        <h3>OTP &amp; Password Recovery</h3>
+      </div>
+      <div class="form-card-body">
+        <div class="form-row-2">
+          <div class="form-group">
+            <label class="form-label" for="otp_expiry_minutes">OTP Expiration (minutes)</label>
+            <input type="number" id="otp_expiry_minutes" name="otp_expiry_minutes" class="form-input"
+              value="{{ cfg.otp_expiry_minutes or 10 }}" min="1" max="60">
+            <span class="field-hint">1–60 minutes. Default: 10.</span>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Password Recovery</label>
+            <label class="toggle-row">
+              <input type="checkbox" name="recovery_enabled" id="recovery_enabled"
+                {{ 'checked' if cfg.recovery_enabled else '' }}>
+              <span class="toggle-track"></span>
+              <span class="toggle-label">Enable OTP-based password recovery</span>
+            </label>
+            <span class="field-hint">Disabling blocks all OTP resets across all portals.</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    {# ── Save ──────────────────────────────────────────────────────────────── #}
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary">
+        <iconify-icon icon="lucide:save" width="16"></iconify-icon>
+        Save Settings
+      </button>
+    </div>
+
+  </div>
+</form>
+
+<script>
+document.getElementById('validateMailerSendBtn').addEventListener('click', async function() {
+  const key = document.getElementById('mailersend_api_key').value.trim();
+  if (!key) { alert('Enter a MailerSend API key first.'); return; }
+
+  const btn = this;
+  btn.disabled = true;
+  btn.textContent = 'Validating…';
+
+  const result = document.getElementById('mailersend-validate-result');
+  result.style.display = 'none';
+
+  try {
+    const fd = new FormData();
+    fd.append('csrf_token',        '{{ csrf_token() }}');
+    fd.append('action',            'validate_mailersend_key');
+    fd.append('mailersend_api_key', key);
+
+    const resp = await fetch('{{ url_for("superadmin.email_settings") }}', {
+      method: 'POST', body: fd,
+    });
+    const data = await resp.json();
+
+    result.style.display = 'block';
+    result.className = data.ok ? 'alert alert-success' : 'alert alert-danger';
+    result.textContent = data.message;
+  } catch (e) {
+    result.style.display = 'block';
+    result.className = 'alert alert-danger';
+    result.textContent = 'Validation request failed: ' + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<iconify-icon icon="lucide:check-circle" width="14"></iconify-icon> Validate';
+  }
+});
+</script>
+{% endblock %}
