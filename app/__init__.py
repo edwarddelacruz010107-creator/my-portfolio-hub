@@ -87,9 +87,10 @@ def resolve_limiter_storage_uri(app) -> str:
 
     try:
         import redis as _redis
-        client = _redis.from_url(
-            storage_uri, socket_connect_timeout=2, socket_timeout=2
-        )
+        kwargs = {"socket_connect_timeout": 2, "socket_timeout": 2}
+        if storage_uri.startswith("rediss://"):
+            kwargs["ssl_cert_reqs"] = None
+        client = _redis.from_url(storage_uri, **kwargs)
         client.ping()
         client.close()
         return storage_uri
@@ -124,10 +125,40 @@ _SYSTEM_PREFIXES = RESERVED_SLUGS
 
 csp = {
     "default-src": "'self'",
-    "script-src": ["'self'"],
-    "style-src": ["'self'", "'unsafe-inline'"],
-    "img-src": ["'self'", "data:"],
+    "base-uri": "'self'",
+    "script-src": [
+        "'self'",
+        "'unsafe-inline'",
+        "https://cdnjs.cloudflare.com",
+        "https://cdn.jsdelivr.net",
+        "https://unpkg.com",
+        "https://api.web3forms.com",
+        "https://code.iconify.design",
+    ],
+    "style-src": [
+        "'self'",
+        "'unsafe-inline'",
+        "https://fonts.googleapis.com",
+        "https://cdnjs.cloudflare.com",
+    ],
+    "font-src": [
+        "'self'",
+        "data:",
+        "https://fonts.gstatic.com",
+    ],
+    "img-src": [
+        "'self'",
+        "data:",
+        "blob:",
+        "https://*.supabase.co",
+    ],
+    "connect-src": [
+        "'self'",
+        "https://api.web3forms.com",
+        "https://api.iconify.design",
+    ],
     "object-src": "'none'",
+    "frame-ancestors": "'none'",
 }
 
 def _init_scheduler(app):
@@ -157,12 +188,13 @@ def _init_scheduler(app):
     is_render = bool(os.environ.get('RENDER_INSTANCE_ID'))
     is_dev = app.config.get('DEBUG') or app.config.get('ENV') == 'development'
 
-    # In production with multiple workers, ENABLE_SCHEDULER must be explicitly set.
-    # On Render with --workers 1 (current render.yaml), is_render is sufficient.
-    should_run = (
-        enable_scheduler in ('true', '1', 'yes')
-        or is_dev
-    )
+    if is_dev and os.environ.get("WERKZEUG_RUN_MAIN") != "true":
+        return
+
+    enabled = enable_scheduler in ('true', '1', 'yes')
+    disabled = enable_scheduler in ('false', '0', 'no')
+
+    should_run = (not disabled) if is_dev else enabled
 
     if not should_run:
         logger.info(
@@ -215,15 +247,15 @@ def create_app(config_name: str = 'default') -> Flask:
         x_host=1,
     )
 
+    app.config.from_object(config[config_name])
+    config[config_name].init_app(app)
+
     Talisman(
         app,
         force_https=not app.debug,
         content_security_policy=csp,
         frame_options="DENY",
     )
-
-    app.config.from_object(config[config_name])
-    config[config_name].init_app(app)
 
     logging.basicConfig(
         level=logging.DEBUG if app.debug else logging.INFO,
@@ -235,6 +267,23 @@ def create_app(config_name: str = 'default') -> Flask:
     login_manager.init_app(app)
     csrf.init_app(app)
     migrate.init_app(app, db, compare_type=True)
+    if app.config.get("CACHE_TYPE") == "RedisCache":
+        redis_url = (app.config.get("CACHE_REDIS_URL") or os.environ.get("REDIS_URL", "")).strip()
+        if not redis_url:
+            app.config["CACHE_TYPE"] = "SimpleCache"
+        else:
+            try:
+                import redis as _redis
+                kwargs = {"socket_connect_timeout": 2, "socket_timeout": 2}
+                if redis_url.startswith("rediss://"):
+                    kwargs["ssl_cert_reqs"] = None
+                client = _redis.from_url(redis_url, **kwargs)
+                client.ping()
+                client.close()
+            except Exception as exc:
+                logger.warning("Redis cache unreachable at startup (%s) — using SimpleCache.", exc)
+                app.config["CACHE_TYPE"] = "SimpleCache"
+                app.config["CACHE_REDIS_URL"] = ""
     cache.init_app(app)
 
     # ── Rate Limiter — pre-flight-checked storage, never crashes the app ──────
@@ -337,6 +386,35 @@ def create_app(config_name: str = 'default') -> Flask:
 
             logger.info("Database connection verified at startup")
 
+            try:
+                from app.models.core import Tenant as _Tenant
+                tenant = _Tenant.query.filter_by(slug="default").first()
+                if tenant:
+                    app.config["TENANT_LOOKUP_MODE"] = "slug_to_id"
+                    app.config["DEFAULT_TENANT_ID"] = tenant.id
+                    logger.info(
+                        "TENANT STARTUP: lookup_mode=%s tenant_slug=%s tenant_id=%s tenant_status=%s",
+                        app.config.get("TENANT_LOOKUP_MODE"),
+                        tenant.slug,
+                        tenant.id,
+                        tenant.status,
+                    )
+                else:
+                    app.config["TENANT_LOOKUP_MODE"] = "slug_to_id"
+                    logger.warning(
+                        "TENANT STARTUP: lookup_mode=%s tenant_slug=%s resolution=not_found",
+                        app.config.get("TENANT_LOOKUP_MODE"),
+                        "default",
+                    )
+            except Exception as exc:
+                app.config["TENANT_LOOKUP_MODE"] = "slug_to_id"
+                logger.warning(
+                    "TENANT STARTUP: lookup_mode=%s tenant_slug=%s resolution=error (%s)",
+                    app.config.get("TENANT_LOOKUP_MODE"),
+                    "default",
+                    exc,
+                )
+
         except Exception as exc:
             db.session.remove()
             if _is_production:
@@ -403,6 +481,14 @@ def create_app(config_name: str = 'default') -> Flask:
             return Markup('')
         return Markup(_escape(value).replace('\n', Markup('<br>\n')))
 
+    @app.template_filter('upload_url')
+    def upload_url_filter(value: str | None, subfolder: str) -> str:
+        if not value:
+            return ''
+        if isinstance(value, str) and value.startswith('http'):
+            return value
+        return url_for('static', filename=f'uploads/{subfolder}/{value}')
+
     from app.heartbeat import init_heartbeat
     init_heartbeat(app)
 
@@ -461,36 +547,9 @@ def create_app(config_name: str = 'default') -> Flask:
     @app.after_request
     def set_security_headers(response):
         response.headers['X-Content-Type-Options'] = 'nosniff'
-        response.headers['X-Frame-Options']        = 'SAMEORIGIN'
         response.headers['X-XSS-Protection']       = '1; mode=block'
         response.headers['Referrer-Policy']        = 'strict-origin-when-cross-origin'
         response.headers['Permissions-Policy']     = 'geolocation=(), microphone=(), camera=()'
-
-        if not app.debug:
-            response.headers['Strict-Transport-Security'] = (
-                'max-age=31536000; includeSubDomains'
-            )
-            # SEC-002 FIX: removed 'unsafe-inline' from script-src.
-            # All dynamic JS values should be passed via data-* attributes.
-            # style-src retains 'unsafe-inline' for Jinja2 inline styles
-            # (required by some template components; tighten progressively).
-            response.headers['Content-Security-Policy'] = (
-                "default-src 'self'; "
-                "script-src 'self' "
-                "   https://cdnjs.cloudflare.com "
-                "   https://cdn.jsdelivr.net "
-                "   https://api.web3forms.com "
-                "   https://code.iconify.design; "
-                "style-src 'self' 'unsafe-inline' "
-                "   https://fonts.googleapis.com "
-                "   https://cdnjs.cloudflare.com; "
-                "font-src 'self' https://fonts.gstatic.com; "
-                "img-src 'self' data: blob: https://*.supabase.co; "
-                "connect-src 'self' "
-                "   https://api.web3forms.com "
-                "   https://api.iconify.design; "
-                "frame-ancestors 'none';"
-            )
 
         return response
     

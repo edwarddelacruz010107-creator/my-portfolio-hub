@@ -94,7 +94,7 @@ def resolve_tenant_from_subdomain():
     
     try:
         tenant = Tenant.query.filter_by(slug=subdomain).first()
-        if tenant and tenant.is_active:
+        if tenant and tenant.status == 'active':
             return tenant
     except Exception as exc:
         logger.error('Error resolving tenant from subdomain %s: %s', subdomain, exc)
@@ -113,7 +113,7 @@ def resolve_tenant_from_session():
     
     try:
         tenant = Tenant.query.filter_by(id=int(tenant_id)).first()
-        if tenant and tenant.is_active:
+        if tenant and tenant.status == 'active':
             return tenant
     except Exception as exc:
         logger.error('Error resolving tenant from session: %s', exc)
@@ -167,7 +167,7 @@ def resolve_tenant_from_api_key():
         
         from app.models.core import Tenant
         tenant = Tenant.query.filter_by(id=key_obj.tenant_id).first()
-        if tenant and tenant.is_active:
+        if tenant and tenant.status == 'active':
             return tenant
         
     except Exception as exc:
@@ -222,7 +222,7 @@ def require_tenant(api_auth_only=False):
                 logger.warning('Tenant resolution failed from %s', request.remote_addr)
                 abort(401)  # Unauthorized
             
-            if not tenant.is_active:
+            if tenant.status != 'active':
                 logger.warning('Inactive tenant access attempt: id=%s', tenant.id)
                 abort(403)  # Forbidden
             
@@ -331,7 +331,7 @@ def enforce_tenant_context():
     if not tenant:
         tenant = resolve_tenant_from_api_key()
     
-    if tenant and tenant.is_active:
+    if tenant and tenant.status == 'active':
         set_current_tenant(tenant)
         logger.debug('Tenant context established: id=%s', tenant.id)
     
