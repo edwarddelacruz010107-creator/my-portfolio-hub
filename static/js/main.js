@@ -4,6 +4,24 @@
 
 document.addEventListener('DOMContentLoaded', () => {
 
+  window.addEventListener('error', (e) => {
+    const t = e.target;
+    if (t && t.tagName === 'SCRIPT' && t.src) {
+      console.error('[CMS] Failed to load script:', t.src);
+    } else if (e && e.message) {
+      console.error('[CMS] Runtime error:', e.message);
+    }
+  }, true);
+  window.addEventListener('unhandledrejection', (e) => {
+    console.error('[CMS] Unhandled promise rejection:', e.reason);
+  });
+
+  setTimeout(() => {
+    if (!customElements.get('iconify-icon')) {
+      console.error('[CMS] Icon library (Iconify) not registered; icons may not render.');
+    }
+  }, 0);
+
   // ── Scroll-reveal animation ──────────────────
   const revealEls = document.querySelectorAll(
     '.proj-card, .skill-item, .testimonial-card, .stat-item, .about-text'

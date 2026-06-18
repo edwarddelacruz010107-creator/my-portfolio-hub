@@ -31,6 +31,24 @@ document.addEventListener('DOMContentLoaded', () => {
     const skillBars     = document.querySelectorAll('.skill-progress');
     const typingText    = document.getElementById('typingText');
 
+    window.addEventListener('error', (e) => {
+        const t = e.target;
+        if (t && t.tagName === 'SCRIPT' && t.src) {
+            console.error('[Portfolio] Failed to load script:', t.src);
+        } else if (e && e.message) {
+            console.error('[Portfolio] Runtime error:', e.message);
+        }
+    }, true);
+    window.addEventListener('unhandledrejection', (e) => {
+        console.error('[Portfolio] Unhandled promise rejection:', e.reason);
+    });
+
+    setTimeout(() => {
+        if (!customElements.get('iconify-icon')) {
+            console.error('[Portfolio] Icon library (Iconify) not registered; icons may not render.');
+        }
+    }, 0);
+
 
     // ===================== 1. LOADING SCREEN =====================
     window.addEventListener('load', () => {
@@ -50,38 +68,41 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
     // ===================== 2. TYPING ANIMATION =====================
-    const typingWords = [
-        'Web Developer',
-        'UI/UX Designer',
-        'Freelancer',
-        'Problem Solver',
-        'Creative Coder'
-    ];
-    let wordIndex  = 0;
-    let charIndex  = 0;
-    let isDeleting = false;
+    const rawTyping = (typingText?.dataset?.words || '').trim();
+    const typingWords = rawTyping
+        ? rawTyping.split('|').map(s => s.trim()).filter(Boolean)
+        : [];
 
-    function typeEffect() {
-        const currentWord = typingWords[wordIndex];
-        if (isDeleting) {
-            if (typingText) typingText.textContent = currentWord.substring(0, charIndex - 1);
-            charIndex--;
-        } else {
-            if (typingText) typingText.textContent = currentWord.substring(0, charIndex + 1);
-            charIndex++;
+    if (typingText && typingWords.length === 1) {
+        typingText.textContent = typingWords[0];
+    } else if (typingText && typingWords.length > 1) {
+        let wordIndex = 0;
+        let charIndex = 0;
+        let isDeleting = false;
+
+        function typeEffect() {
+            const currentWord = typingWords[wordIndex];
+            if (isDeleting) {
+                typingText.textContent = currentWord.substring(0, charIndex - 1);
+                charIndex--;
+            } else {
+                typingText.textContent = currentWord.substring(0, charIndex + 1);
+                charIndex++;
+            }
+            let delay = isDeleting ? 40 : 80;
+            if (!isDeleting && charIndex === currentWord.length) {
+                delay = 2000;
+                isDeleting = true;
+            } else if (isDeleting && charIndex === 0) {
+                isDeleting = false;
+                wordIndex = (wordIndex + 1) % typingWords.length;
+                delay = 500;
+            }
+            setTimeout(typeEffect, delay);
         }
-        let delay = isDeleting ? 40 : 80;
-        if (!isDeleting && charIndex === currentWord.length) {
-            delay = 2000;
-            isDeleting = true;
-        } else if (isDeleting && charIndex === 0) {
-            isDeleting = false;
-            wordIndex = (wordIndex + 1) % typingWords.length;
-            delay = 500;
-        }
-        setTimeout(typeEffect, delay);
+
+        setTimeout(typeEffect, 300);
     }
-    if (typingText) setTimeout(typeEffect, 1000);
 
 
     // ===================== 3. MOBILE MENU =====================
