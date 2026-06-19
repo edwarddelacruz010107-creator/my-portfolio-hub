@@ -71,16 +71,16 @@
     <span class="provider-card-check"><iconify-icon icon="lucide:check" width="14"></iconify-icon></span>
   </label>
 
-  <label class="provider-card {% if settings.provider == 'web3forms' %}provider-card--active{% endif %}"
-         onclick="selectProvider('web3forms')">
-    <input type="radio" name="_provider_pick" value="web3forms"
-           {% if settings.provider == 'web3forms' %}checked{% endif %} style="display:none;">
+  <label class="provider-card {% if settings.provider == 'email_only' %}provider-card--active{% endif %}"
+         onclick="selectProvider('email_only')">
+    <input type="radio" name="_provider_pick" value="email_only"
+           {% if settings.provider == 'email_only' %}checked{% endif %} style="display:none;">
     <div class="provider-card-icon" style="background:rgba(99,102,241,.12);">
-      <iconify-icon icon="lucide:zap" width="22"></iconify-icon>
+      <iconify-icon icon="lucide:mail" width="22"></iconify-icon>
     </div>
     <div class="provider-card-body">
-      <div class="provider-card-name">Web3Forms</div>
-      <div class="provider-card-desc">Free email submission service. Get your access_key at web3forms.com.</div>
+      <div class="provider-card-name">Email Only</div>
+      <div class="provider-card-desc">Deliver submissions to an email address via MailerSend. No external account needed.</div>
     </div>
     <span class="provider-card-check"><iconify-icon icon="lucide:check" width="14"></iconify-icon></span>
   </label>
@@ -126,39 +126,18 @@
       </div>
     </div>
 
-    <div class="form-card" id="web3Config"
-         style="{{ 'display:none;' if settings.provider != 'web3forms' else '' }}">
+    <div class="form-card" id="emailOnlyConfig"
+         style="{{ 'display:none;' if settings.provider != 'email_only' else '' }}">
       <div class="form-card-header">
-        <iconify-icon icon="lucide:zap" width="18"></iconify-icon>
-        <h3>Web3Forms Configuration</h3>
-        <span class="tag-sm tag-success" style="margin-left:auto;">
-          <iconify-icon icon="lucide:external-link" width="12"></iconify-icon>
-          <a href="https://web3forms.com" target="_blank" rel="noopener" style="color:inherit;">web3forms.com</a>
-        </span>
+        <iconify-icon icon="lucide:mail" width="18"></iconify-icon>
+        <h3>Email Only Configuration</h3>
       </div>
       <div class="form-card-body">
-        <div class="form-group">
-          <label class="form-label" for="api_key">
-            Access Key (API Key)
-            {% if settings.api_key %}
-              <span class="badge badge-success" style="margin-left:.5rem;">Configured</span>
-            {% endif %}
-          </label>
-          <input
-            type="password"
-            id="api_key"
-            name="api_key"
-            class="form-input"
-            autocomplete="new-password"
-            placeholder="{{ '●●●●●●●●  (set — enter new value to replace)' if settings.api_key else 'Paste your Web3Forms access_key' }}"
-            maxlength="500"
-          >
-          <span class="field-hint">
-            Leave blank to keep the current key. Get your key at
-            <a href="https://web3forms.com" target="_blank" rel="noopener">web3forms.com</a>.
-            The key is stored encrypted and never sent to the browser.
-          </span>
-        </div>
+        <p class="field-hint" style="margin-bottom:1rem;">
+          Contact form submissions are delivered by email to the recipient address below
+          using the platform's MailerSend configuration. Messages are always saved
+          to the CMS inbox regardless of delivery status.
+        </p>
       </div>
     </div>
 
@@ -252,10 +231,10 @@ function selectProvider(p) {
     }
   });
 
-  document.getElementById('basinConfig').style.display  = p === 'basin'     ? '' : 'none';
-  document.getElementById('web3Config').style.display   = p === 'web3forms' ? '' : 'none';
-  document.getElementById('sharedConfig').style.display = p !== 'disabled'  ? '' : 'none';
-  document.getElementById('testBtn').style.display      = p !== 'disabled'  ? '' : 'none';
+  document.getElementById('basinConfig').style.display      = p === 'basin'      ? '' : 'none';
+  document.getElementById('emailOnlyConfig').style.display  = p === 'email_only'  ? '' : 'none';
+  document.getElementById('sharedConfig').style.display     = p !== 'disabled'    ? '' : 'none';
+  document.getElementById('testBtn').style.display          = p !== 'disabled'    ? '' : 'none';
 }
 
 async function testProvider() {

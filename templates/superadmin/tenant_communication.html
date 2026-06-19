@@ -18,7 +18,7 @@
 {# Status indicators #}
 <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-bottom:1.5rem;">
   <span class="tag-sm {{ 'tag-success' if tenant.form_provider == 'basin' else 'tag-muted' }}">
-    {{ '✓ Basin configured' if tenant.form_provider == 'basin' else '○ Internal CMS forms' }}
+    {{ '✓ Basin configured' if tenant.form_provider == 'basin' else '○ Email Only' }}
   </span>
   <span class="tag-sm {{ 'tag-success' if has_mailersend else 'tag-warn' }}">
     {{ '✓ MailerSend configured' if has_mailersend else '○ MailerSend: using global' }}
@@ -40,12 +40,12 @@
         <div class="form-group">
           <label class="form-label">Provider</label>
           <div style="display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:1rem;">
-            <label class="radio-card {{ 'radio-card-active' if tenant.form_provider == 'internal' else '' }}" style="flex:1;min-width:180px;">
-              <input type="radio" name="form_provider" value="internal"
+            <label class="radio-card {{ 'radio-card-active' if tenant.form_provider != 'basin' else '' }}" style="flex:1;min-width:180px;">
+              <input type="radio" name="form_provider" value="email"
                 {{ 'checked' if tenant.form_provider != 'basin' else '' }}>
               <div>
-                <strong>Internal CMS</strong>
-                <p class="field-hint" style="margin:0;">Submissions stored in the CMS messages inbox.</p>
+                <strong>Email Only</strong>
+                <p class="field-hint" style="margin:0;">Deliver notifications to the tenant recipient email and store in inbox.</p>
               </div>
             </label>
             <label class="radio-card {{ 'radio-card-active' if tenant.form_provider == 'basin' else '' }}" style="flex:1;min-width:180px;">
@@ -56,6 +56,22 @@
                 <p class="field-hint" style="margin:0;">Forwarded to tenant's Basin endpoint.</p>
               </div>
             </label>
+          </div>
+        </div>
+
+        <div id="emailSection" style="{{ 'display:none;' if tenant.form_provider == 'basin' else '' }}">
+          <div class="form-group">
+            <label class="form-label" for="recipient_email">Recipient Email</label>
+            <input
+              type="email"
+              id="recipient_email"
+              name="recipient_email"
+              class="form-input"
+              value="{{ tenant.contact_email or '' }}"
+              placeholder="you@yourdomain.com"
+              maxlength="200"
+            >
+            <span class="field-hint">Where visitor contact form notifications should be delivered.</span>
           </div>
         </div>
 
@@ -158,7 +174,6 @@
             <strong>ℹ️ Email Priority Order:</strong>
             <br>1. Per-tenant MailerSend (if all fields filled)
             <br>2. Global MailerSend (if superadmin configured)
-            <br>3. Web3Forms (if configured)
           </p>
         </div>
       </div>
@@ -241,6 +256,8 @@ document.querySelectorAll('input[name="form_provider"]').forEach(function(radio)
   radio.addEventListener('change', function() {
     document.getElementById('basinSection').style.display =
       this.value === 'basin' ? 'block' : 'none';
+    document.getElementById('emailSection').style.display =
+      this.value === 'basin' ? 'none' : 'block';
   });
 });
 </script>

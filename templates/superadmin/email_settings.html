@@ -77,6 +77,22 @@
               value="{{ cfg.sender_email or '' }}" placeholder="noreply@yourdomain.com" maxlength="200">
           </div>
         </div>
+        {# Test Email row — only shown when key is configured #}
+        {% if has_mailersend %}
+        <div class="form-group" style="margin-top:1rem;">
+          <label class="form-label">Test Email Delivery</label>
+          <div class="input-group">
+            <input type="email" id="testEmailAddr" class="form-input"
+                   placeholder="your@email.com" maxlength="200">
+            <button type="button" id="testEmailBtn" class="btn btn-ghost btn-sm"
+                    style="white-space:nowrap;">
+              <iconify-icon icon="lucide:send" width="14"></iconify-icon>
+              Send Test
+            </button>
+          </div>
+          <span class="field-hint">Sends a live test via the configured MailerSend key to verify end-to-end delivery.</span>
+        </div>
+        {% endif %}
         <div id="mailersend-validate-result" style="display:none;margin-top:.75rem;"></div>
       </div>
     </div>
@@ -147,6 +163,7 @@
 </form>
 
 <script>
+/* ── Validate MailerSend key ─────────────────────────────────────────── */
 document.getElementById('validateMailerSendBtn').addEventListener('click', async function() {
   const key = document.getElementById('mailersend_api_key').value.trim();
   if (!key) { alert('Enter a MailerSend API key first.'); return; }
@@ -160,8 +177,8 @@ document.getElementById('validateMailerSendBtn').addEventListener('click', async
 
   try {
     const fd = new FormData();
-    fd.append('csrf_token',        '{{ csrf_token() }}');
-    fd.append('action',            'validate_mailersend_key');
+    fd.append('csrf_token',         '{{ csrf_token() }}');
+    fd.append('action',             'validate_mailersend_key');
     fd.append('mailersend_api_key', key);
 
     const resp = await fetch('{{ url_for("superadmin.email_settings") }}', {
@@ -181,5 +198,44 @@ document.getElementById('validateMailerSendBtn').addEventListener('click', async
     btn.innerHTML = '<iconify-icon icon="lucide:check-circle" width="14"></iconify-icon> Validate';
   }
 });
+
+/* ── Send test email ─────────────────────────────────────────────────── */
+const testBtn = document.getElementById('testEmailBtn');
+if (testBtn) {
+  testBtn.addEventListener('click', async function() {
+    const addr = document.getElementById('testEmailAddr').value.trim();
+    if (!addr) { alert('Enter a recipient email address.'); return; }
+
+    const btn = this;
+    btn.disabled = true;
+    btn.textContent = 'Sending…';
+
+    const result = document.getElementById('mailersend-validate-result');
+    result.style.display = 'none';
+
+    try {
+      const fd = new FormData();
+      fd.append('csrf_token',  '{{ csrf_token() }}');
+      fd.append('action',      'send_test_email');
+      fd.append('test_email',  addr);
+
+      const resp = await fetch('{{ url_for("superadmin.email_settings") }}', {
+        method: 'POST', body: fd,
+      });
+      const data = await resp.json();
+
+      result.style.display = 'block';
+      result.className = data.ok ? 'alert alert-success' : 'alert alert-danger';
+      result.textContent = data.message;
+    } catch (e) {
+      result.style.display = 'block';
+      result.className = 'alert alert-danger';
+      result.textContent = 'Request failed: ' + e.message;
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = '<iconify-icon icon="lucide:send" width="14"></iconify-icon> Send Test';
+    }
+  });
+}
 </script>
 {% endblock %}

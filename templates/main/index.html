@@ -819,18 +819,15 @@
                     <!-- Contact Form -->
                     <div class="contact-form-wrapper reveal-right">
 
-                        {# ── Web3Forms mode: JS will intercept submit and POST JSON to Web3Forms API ── #}
                         <form
                             id="contactForm"
                             class="contact-form"
                             novalidate
-                            {% if web3forms_access_key %}
-                            data-web3forms-key="{{ web3forms_access_key }}"
-                            {% else %}
                             data-fallback-url="{{ contact_url if contact_url else url_for('tenant.contact', tenant_slug=tenant_slug or active_tenant_slug or 'default') }}"
-                            {% endif %}
                             aria-label="Contact form"
                         >
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <input type="hidden" name="submission_id" id="submissionId" value="">
                             {# ── Honeypot: hidden from real users, bots fill it in ── #}
                             <div class="form-honeypot" aria-hidden="true" tabindex="-1">
                                 <input type="text" name="website" autocomplete="off" tabindex="-1" id="hpWebsite">

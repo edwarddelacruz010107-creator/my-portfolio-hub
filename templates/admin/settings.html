@@ -196,8 +196,8 @@
   <div class="form-card-body">
     <p class="field-hint" style="margin-bottom:1.25rem;">
       Choose where portfolio contact form submissions are sent.
-      <strong>Internal CMS</strong> stores messages in your inbox.
-      <strong>Basin</strong> forwards to your own Basin endpoint.
+      <strong>Email Only</strong> delivers notifications to your recipient email and stores messages in your inbox.
+      <strong>Basin</strong> forwards to your own Basin endpoint and stores messages in your inbox.
     </p>
     <form method="POST" action="{{ url_for('admin.update_contact_form_provider') }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -206,15 +206,31 @@
         <label class="form-label">Provider</label>
         <div style="display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:1rem;">
           <label style="display:flex;align-items:center;gap:.5rem;cursor:pointer;">
-            <input type="radio" name="form_provider" value="internal"
+            <input type="radio" name="form_provider" value="email"
               {{ 'checked' if (tenant.form_provider or 'internal') != 'basin' else '' }}>
-            Internal CMS
+            Email Only
           </label>
           <label style="display:flex;align-items:center;gap:.5rem;cursor:pointer;">
             <input type="radio" name="form_provider" value="basin"
               {{ 'checked' if tenant.form_provider == 'basin' else '' }}>
             Basin
           </label>
+        </div>
+      </div>
+
+      <div id="emailSectionAdmin" style="{{ 'display:none;' if tenant.form_provider == 'basin' else '' }}">
+        <div class="form-group">
+          <label class="form-label" for="recipient_email_admin">Recipient Email</label>
+          <input
+            type="email"
+            id="recipient_email_admin"
+            name="recipient_email"
+            class="form-input"
+            value="{{ tenant.contact_email or '' }}"
+            placeholder="you@yourdomain.com"
+            maxlength="200"
+          >
+          <span class="field-hint">Where contact form notifications should be delivered.</span>
         </div>
       </div>
 
@@ -252,6 +268,8 @@ document.querySelectorAll('input[name="form_provider"]').forEach(function(r) {
   r.addEventListener('change', function() {
     document.getElementById('basinSectionAdmin').style.display =
       this.value === 'basin' ? 'block' : 'none';
+    document.getElementById('emailSectionAdmin').style.display =
+      this.value === 'basin' ? 'none' : 'block';
   });
 });
 </script>

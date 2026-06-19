@@ -136,6 +136,66 @@
     </div>
   </div>
 
+  {# ── Messages Stats Row ────────────────────────────────── #}
+  <div class="stats-row" style="margin-top:.75rem;">
+    <a href="{{ url_for('admin.messages') }}" class="stat-card-v2" style="text-decoration:none;cursor:pointer;
+       {% if stats.unread_messages %}border-color:rgba(245,158,11,.4);background:linear-gradient(135deg,var(--bg-2),rgba(245,158,11,.05));{% endif %}">
+      <div class="stat-header">
+        <div class="stat-icon-wrap {% if stats.unread_messages %}warn{% else %}info{% endif %}">
+          <iconify-icon icon="lucide:mail{% if stats.unread_messages %}-open{% endif %}" width="18"></iconify-icon>
+        </div>
+      </div>
+      <div class="stat-big">{{ stats.unread_messages }}</div>
+      <div class="stat-name">Unread Messages</div>
+      <div class="stat-footer">
+        {% if stats.unread_messages %}
+          <span class="trend trend-warn">needs attention</span>
+        {% else %}
+          <span class="stat-sub">inbox clear</span>
+        {% endif %}
+      </div>
+    </a>
+
+    <a href="{{ url_for('admin.messages') }}" class="stat-card-v2" style="text-decoration:none;cursor:pointer;">
+      <div class="stat-header">
+        <div class="stat-icon-wrap accent">
+          <iconify-icon icon="lucide:inbox" width="18"></iconify-icon>
+        </div>
+      </div>
+      <div class="stat-big">{{ stats.total_messages }}</div>
+      <div class="stat-name">Total Messages</div>
+      <div class="stat-footer">
+        <span class="stat-sub">all time</span>
+      </div>
+    </a>
+
+    <a href="{{ url_for('admin.messages') }}" class="stat-card-v2" style="text-decoration:none;cursor:pointer;">
+      <div class="stat-header">
+        <div class="stat-icon-wrap success">
+          <iconify-icon icon="lucide:calendar-check" width="18"></iconify-icon>
+        </div>
+      </div>
+      <div class="stat-big">{{ stats.today_messages }}</div>
+      <div class="stat-name">Today's Messages</div>
+      <div class="stat-footer">
+        <span class="stat-sub">since midnight UTC</span>
+      </div>
+    </a>
+
+    <a href="{{ url_for('admin.messages') }}" class="stat-card-v2" style="text-decoration:none;cursor:pointer;">
+      <div class="stat-header">
+        <div class="stat-icon-wrap info">
+          <iconify-icon icon="lucide:calendar-days" width="18"></iconify-icon>
+        </div>
+      </div>
+      <div class="stat-big">{{ stats.week_messages }}</div>
+      <div class="stat-name">Last 7 Days</div>
+      <div class="stat-footer">
+        <span class="stat-sub">rolling window</span>
+      </div>
+    </a>
+  </div>
+
   {# ── Two-column layout ────────────────────────────────── #}
   <div class="dashboard-cols">
 

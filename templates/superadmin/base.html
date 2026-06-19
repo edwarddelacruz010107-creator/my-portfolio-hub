@@ -85,13 +85,13 @@
     <div class="nav-section">
       <span class="nav-label">Billing</span>
       <a href="{{ url_for('superadmin.subscription_monitor') }}"
-        class="nav-item {% if request.endpoint == 'superadmin.subscription_monitor' %}active{% endif %}">
-        <span class="nav-icon"><iconify-icon icon="lucide:bar-chart-3" width="18"></iconify-icon></span>
+         class="nav-item {% if request.endpoint == 'superadmin.subscription_monitor' %}active{% endif %}">
+         <span class="nav-icon"><iconify-icon icon="lucide:bar-chart-3" width="18"></iconify-icon></span>
         Sub Monitor
       </a>
       <a href="{{ url_for('superadmin.billing_overview') }}"
          class="nav-item {% if request.endpoint == 'superadmin.billing_overview' %}active{% endif %}">
-        <span class="nav-icon"><iconify-icon icon="lucide:card" width="18"></iconify-icon></span>
+        <span class="nav-icon"><iconify-icon icon="lucide:cards" width="18"></iconify-icon></span>
         Subscriptions
       </a>
       <a href="{{ url_for('superadmin.subscription_settings') }}"
