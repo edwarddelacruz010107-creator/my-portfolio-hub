@@ -17,7 +17,7 @@ run.py only provides:
 import os
 import socket
 
-from app import create_app, db
+from app import create_app, db, register_cli_commands
 
 config_name = os.environ.get('FLASK_ENV', 'default').lower()
 if config_name not in {'development', 'production', 'testing', 'default'}:
@@ -61,6 +61,7 @@ def make_shell_context():
 # ── Dev server ────────────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
+    register_cli_commands().cli_create_superadmin()
     debug_mode = app.config.get('DEBUG', False)
     port       = int(os.environ.get('PORT', 5000))
     try:
