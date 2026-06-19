@@ -110,7 +110,7 @@ class AccountLockout:
     ATTEMPT_RESET_MINUTES = 30
 
     @classmethod
-    def is_locked(cls, user) -> bool:
+    def is_locked(cls, user, db) -> bool:
 
         if not user.failed_login_attempts:
             return False
@@ -154,8 +154,8 @@ class AccountLockout:
         return True
 
     @classmethod
-    def get_lockout_remaining(cls, user) -> int:
-        if not cls.is_locked(user):
+    def get_lockout_remaining(cls, user, db) -> int:
+        if not cls.is_locked(user, db):
             return 0
         lockout_end = (_normalize_to_utc(user.last_failed_login_at) + timedelta(minutes=cls.LOCKOUT_DURATION_MINUTES))
         remaining = (lockout_end - datetime.now(timezone.utc)).total_seconds()
