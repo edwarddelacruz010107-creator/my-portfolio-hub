@@ -182,8 +182,7 @@ def sitemap_xml():
 
 
 @main.route('/contact', methods=['GET', 'POST'])
-@csrf.exempt
-@limiter.limit("5 per minute; 20 per hour")
+@limiter.limit(lambda: current_app.config.get('RATELIMIT_CONTACT_FORM', "5 per minute; 20 per hour"))
 def contact():
     """Legacy root contact endpoint (no tenant)."""
     if request.method == 'GET':
@@ -200,16 +199,83 @@ def contact():
     if ip and ',' in ip:
         ip = ip.split(',')[0].strip()
 
+    submission_id = (request.form.get('submission_id') or (request.get_json(silent=True) or {}).get('submission_id') or '').strip()[:80]
+    if submission_id:
+        existing = Inquiry.query.filter_by(tenant_slug='default', submission_id=submission_id).first()
+        if existing:
+            return jsonify(
+                status='success',
+                message="Your message has been sent. I'll get back to you soon!"
+            )
+
+    from app.models.portfolio import Tenant
+    default_tenant = Tenant.query.filter_by(slug='default').first()
+
     inquiry = Inquiry(
+        tenant_id=(default_tenant.id if default_tenant else None),
         tenant_slug='default',
         name=name, email=email,
         subject=subject, message=message,
         ip_address=ip,
+        user_agent=(request.headers.get('User-Agent') or '')[:300],
+        submission_id=submission_id or None,
+        sender='visitor',
+        is_read=False,
+        provider_used='email',
+        delivery_status='pending',
     )
     db.session.add(inquiry)
     db.session.commit()
     log_activity('create', 'inquiry', name, f'Contact from {email}')
-    send_inquiry_email(inquiry)
+
+    try:
+        import os as _os
+        from app.services.mailersend_service import send_email_with_retry as _send_email_with_retry
+
+        api_key = _os.environ.get('MAILERSEND_API_KEY', '').strip()
+        from_email = _os.environ.get('MAILERSEND_FROM_EMAIL', '').strip().lower()
+        from_name = _os.environ.get('MAILERSEND_FROM_NAME', '').strip()
+        dest = (current_app.config.get('ADMIN_EMAIL') or '').strip()
+
+        if api_key and dest:
+            ok = _send_email_with_retry(
+                to_email=dest,
+                subject=f'New inquiry from {name}: {subject or "Contact Form"}',
+                html_content=(
+                    '<div>'
+                    f'<p><strong>Name:</strong> {name}</p>'
+                    f'<p><strong>Email:</strong> {email}</p>'
+                    f'<p><strong>Subject:</strong> {subject}</p>'
+                    f'<pre style="white-space:pre-wrap;">{message}</pre>'
+                    '</div>'
+                ),
+                text_content=(
+                    f'Name: {name}\n'
+                    f'Email: {email}\n'
+                    f'Subject: {subject}\n\n'
+                    f'{message}\n'
+                ),
+                reply_to=email,
+                api_key_override=api_key,
+                from_email_override=from_email,
+                from_name_override=from_name,
+            )
+            inquiry.delivery_status = 'delivered' if ok else 'failed'
+            if not ok:
+                inquiry.delivery_error = 'Email delivery failed.'
+        else:
+            inquiry.delivery_status = 'skipped'
+            inquiry.delivery_error = 'Email not configured.'
+        db.session.commit()
+    except Exception:
+        current_app.logger.exception('Default contact email delivery failed')
+        try:
+            inquiry.delivery_status = 'failed'
+            inquiry.delivery_error = 'Unexpected delivery error.'
+            db.session.commit()
+        except Exception:
+            pass
+
     return jsonify(
         status='success',
         message="Your message has been sent. I'll get back to you soon!"

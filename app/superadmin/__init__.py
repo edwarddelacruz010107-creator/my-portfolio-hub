@@ -675,6 +675,67 @@ def delete_message_thread(msg_id):
     return redirect(url_for('superadmin.messages_inbox'))
 
 
+@superadmin.route('/messages/tenant-stats')
+@superadmin_required
+def tenant_message_stats():
+    """
+    Superadmin-only view: per-tenant message/unread statistics (v5.2).
+
+    Shows ONLY aggregate counts — no message content or visitor data.
+    Tenant isolation is preserved: superadmin cannot read message bodies here.
+
+    Returns JSON when ?format=json is requested (for dashboard widgets),
+    otherwise renders the tenant_message_stats.html template.
+    """
+    from flask import jsonify
+    from datetime import datetime, timezone, timedelta
+    from sqlalchemy import func
+
+    _now = datetime.now(timezone.utc)
+    _week_start = _now - timedelta(days=7)
+
+    # Build per-tenant stats with a single aggregated query
+    rows = (
+        db.session.query(
+            Inquiry.tenant_slug,
+            func.count(Inquiry.id).label('total'),
+            func.sum(
+                db.cast(Inquiry.is_read == False, db.Integer)  # noqa: E712
+            ).label('unread'),
+            func.sum(
+                db.cast(Inquiry.created_at >= _week_start, db.Integer)
+            ).label('last_7_days'),
+        )
+        .filter(
+            Inquiry.tenant_slug.isnot(None),
+            Inquiry.sender == 'visitor',       # visitor-submitted only; not superadmin messages
+        )
+        .group_by(Inquiry.tenant_slug)
+        .order_by(func.sum(db.cast(Inquiry.is_read == False, db.Integer)).desc())  # noqa: E712
+        .all()
+    )
+
+    stats = [
+        {
+            'tenant_slug': r.tenant_slug,
+            'total':       int(r.total or 0),
+            'unread':      int(r.unread or 0),
+            'last_7_days': int(r.last_7_days or 0),
+        }
+        for r in rows
+    ]
+
+    if request.args.get('format') == 'json':
+        return jsonify({'stats': stats, 'total_tenants': len(stats)})
+
+    return render_template(
+        'superadmin/tenant_message_stats.html',
+        stats=stats,
+        total_tenants=len(stats),
+        total_unread=sum(s['unread'] for s in stats),
+    )
+
+
 @superadmin.route('/billing')
 @superadmin_required
 def billing_overview():
@@ -1861,19 +1922,23 @@ def settings():
 @superadmin_required
 def email_settings():
     """
-    Superadmin → Settings → Email & Forms (v4.1)
+    Superadmin → Settings → Email & Forms (v5.2)
 
     Manages GlobalEmailConfig:
-      - Resend API key (replaces Web3Forms for auth/transactional email)
-      - Sender name / email
+      - MailerSend API key (primary transactional email provider)
+      - Sender name / From email address
       - OTP expiry / recovery switch
-      - Default contact form provider (internal | basin)
 
-    The Resend key is NEVER returned to the template — only has_resend bool.
-    Validate action returns JSON (used by fetch() in template JS).
+    The MailerSend API key is stored Fernet-encrypted in DB and is NEVER
+    returned to the template or any JSON response. Only the boolean
+    `has_mailersend` flag is exposed to the UI.
+
+    AJAX actions (POST with action=...):
+      validate_mailersend_key  — validate key against MailerSend API
+      send_test_email          — send a test email to superadmin address
     """
     from app.models.portfolio import GlobalEmailConfig
-    from app.services.resend_service import validate_resend_key
+    from app.services.mailersend_service import validate_mailersend_key, send_email
     from flask import jsonify
     import re as _re
 
@@ -1882,20 +1947,40 @@ def email_settings():
     if request.method == 'POST':
         action = request.form.get('action', 'save')
 
-        # ── AJAX: validate Resend key ──────────────────────────────────────
-        if action == 'validate_resend_key':
-            key = request.form.get('resend_api_key', '').strip()
+        # ── AJAX: validate MailerSend key ──────────────────────────────────
+        if action == 'validate_mailersend_key':
+            key = request.form.get('mailersend_api_key', '').strip()
             if not key:
                 return jsonify({'ok': False, 'message': 'No key supplied.'})
-            valid, msg = validate_resend_key(key)
+            # Validate against live MailerSend API (server-side only)
+            valid, msg = validate_mailersend_key(key)
+            # Never echo back the key in the response
             return jsonify({'ok': valid, 'message': msg})
 
+        # ── AJAX: send test email ──────────────────────────────────────────
+        if action == 'send_test_email':
+            if not cfg.has_mailersend:
+                return jsonify({'ok': False, 'message': 'MailerSend API key not configured. Save your key first.'})
+            test_to = request.form.get('test_email', '').strip().lower()
+            if not test_to or not _re.match(r'^[^\s@]+@[^\s@]+\.[^\s@]{2,}$', test_to):
+                return jsonify({'ok': False, 'message': 'Invalid test recipient email address.'})
+            ok, result = send_email(
+                to=test_to,
+                subject='[Portfolio CMS] MailerSend Test Email',
+                text='This is a test email from Portfolio CMS to confirm MailerSend is correctly configured.',
+                html='<p>This is a <strong>test email</strong> from Portfolio CMS confirming MailerSend is correctly configured.</p>',
+            )
+            if ok:
+                current_app.logger.info('Test email sent to %s by superadmin %s', test_to, current_user.username)
+                return jsonify({'ok': True, 'message': f'Test email delivered to {test_to}.'})
+            return jsonify({'ok': False, 'message': f'Send failed: {result}'})
+
         # ── Save settings ─────────────────────────────────────────────────
-        new_resend_key = request.form.get('resend_api_key', '').strip()
-        sender_name    = request.form.get('sender_name', '').strip()
-        sender_email   = request.form.get('sender_email', '').strip().lower()
-        otp_ttl_raw    = request.form.get('otp_expiry_minutes', '10').strip()
-        recovery_on    = request.form.get('recovery_enabled') == 'on'
+        new_mailersend_key = request.form.get('mailersend_api_key', '').strip()
+        sender_name        = request.form.get('sender_name', '').strip()
+        sender_email       = request.form.get('sender_email', '').strip().lower()
+        otp_ttl_raw        = request.form.get('otp_expiry_minutes', '10').strip()
+        recovery_on        = request.form.get('recovery_enabled') == 'on'
 
         try:
             otp_ttl = max(1, min(60, int(otp_ttl_raw)))
@@ -1906,8 +1991,13 @@ def email_settings():
             flash('Invalid sender email format.', 'danger')
             return redirect(url_for('superadmin.email_settings'))
 
-        if new_resend_key:
-            cfg.resend_api_key = new_resend_key
+        # Store MailerSend key only if a new value was submitted
+        if new_mailersend_key:
+            cfg.mailersend_api_key = new_mailersend_key
+            current_app.logger.info(
+                'MailerSend API key updated by superadmin %s (key_length=%d)',
+                current_user.username, len(new_mailersend_key),
+            )
 
         cfg.sender_name        = sender_name  or cfg.sender_name
         cfg.sender_email       = sender_email or cfg.sender_email
@@ -1919,12 +2009,13 @@ def email_settings():
         flash('Email & Forms settings saved.', 'success')
         return redirect(url_for('superadmin.email_settings'))
 
-    # GET
+    # GET — pass has_mailersend flag; never pass the raw key
     return render_template(
         'superadmin/email_settings.html',
         cfg=cfg,
-        has_resend=cfg.has_resend,
-        default_form_provider='internal',  # Platform-level default; tenants override individually
+        has_mailersend=cfg.has_mailersend,
+        has_resend=False,  # backward-compat — Resend removed in v5.0
+        default_form_provider='internal',
     )
 
 

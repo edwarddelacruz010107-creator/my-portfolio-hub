@@ -25,9 +25,9 @@ from wtforms.validators import (
 
 BASIN_PREFIX   = 'https://usebasin.com/f/'
 PROVIDER_CHOICES = [
-    ('disabled',  'Disabled — use CMS inbox'),
-    ('basin',     'Basin'),
-    ('web3forms', 'Web3Forms'),
+    ('disabled',   'Disabled — use CMS inbox only'),
+    ('basin',      'Basin — serverless form endpoint'),
+    ('email_only', 'Email Only — deliver to recipient email'),
 ]
 
 
@@ -94,17 +94,14 @@ class TenantFormSettingsForm(FlaskForm):
                 raise ValidationError('Basin form ID appears too short. Check the URL.')
 
     def validate_api_key(self, field):
-        """Web3Forms requires an API key on first save (if not already set)."""
-        # NOTE: We cannot tell here if an existing key is stored.
-        # Route handler checks: if provider == web3forms and field is blank
-        # and no stored key exists → reject. Form only validates non-blank entries.
+        """API key length sanity check (only when a value is supplied)."""
         if field.data and len(field.data) < 8:
             raise ValidationError('API key appears too short.')
 
     def validate_receiver_email(self, field):
-        """Receiver email required when provider is active."""
-        if self.provider.data != 'disabled' and self.is_enabled.data:
+        """Receiver email is required for email_only provider and recommended for basin."""
+        if self.provider.data == 'email_only' and self.is_enabled.data:
             if not field.data:
                 raise ValidationError(
-                    'Receiver email is required when the form provider is enabled.'
+                    'Recipient email is required when Email Only provider is enabled.'
                 )

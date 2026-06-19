@@ -859,13 +859,28 @@ class GlobalEmailConfig(db.Model):
         return False
 
     @classmethod
-    def get(cls) -> 'GlobalEmailConfig':
-        row = cls.query.get(1)
-        if not row:
-            row = cls(id=1)
-            db.session.add(row)
-            db.session.flush()
-        return row
+    def get(cls):
+        from sqlalchemy.exc import IntegrityError
+
+        config = db.session.get(cls, 1)
+
+        if config is None:
+            try:
+                config = cls(
+                    id=1,
+                    sender_name="Portfolio CMS",
+                    otp_expiry_minutes=10,
+                    recovery_enabled=True
+                )
+
+                db.session.add(config)
+                db.session.commit()
+
+            except IntegrityError:
+                db.session.rollback()
+                config = db.session.get(cls, 1)
+
+        return config
 
     def effective_web3forms_key(self, app_config: dict) -> str:
         return self.web3forms_key or app_config.get('WEB3FORMS_ACCESS_KEY', '')
@@ -909,7 +924,15 @@ class Inquiry(db.Model):
     updated_at = db.Column(db.DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
     thread_unread_tenant = db.Column(db.Integer, default=0, nullable=False, server_default='0')
     thread_unread_super  = db.Column(db.Integer, default=0, nullable=False, server_default='0')
-    created_at = db.Column(db.DateTime(timezone=True), default=_utcnow)
+    created_at           = db.Column(db.DateTime(timezone=True), default=_utcnow)
+
+    # ── Delivery tracking (v5.2) ──────────────────────────────────────────────
+    # Nullable so existing rows remain compatible (no backfill needed)
+    user_agent       = db.Column(db.String(500),  nullable=True)       # submitter UA string
+    submission_id    = db.Column(db.String(80),   nullable=True)       # idempotency key from contact form
+    provider_used    = db.Column(db.String(30),   nullable=True)       # 'basin'|'email_only'|'email'|'internal'
+    delivery_status  = db.Column(db.String(20),   nullable=True)       # 'delivered'|'failed'|'pending'|None
+    delivery_error   = db.Column(db.String(500),  nullable=True)       # error detail on failure
 
     tenant = db.relationship('Tenant', backref=db.backref('inquiries', lazy='dynamic'))
 

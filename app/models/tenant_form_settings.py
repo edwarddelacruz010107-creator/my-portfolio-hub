@@ -22,7 +22,7 @@ from app.models.core import encrypt_secret, decrypt_secret  # canonical Fernet h
 
 logger = logging.getLogger(__name__)
 
-VALID_PROVIDERS = ('basin', 'web3forms', 'disabled')
+VALID_PROVIDERS = ('basin', 'email_only', 'web3forms', 'disabled')
 BASIN_PREFIX    = 'https://usebasin.com/f/'
 WEB3FORMS_URL   = 'https://api.web3forms.com/submit'
 
@@ -131,6 +131,8 @@ class TenantFormSettings(db.Model):
         if self.provider == 'basin':
             return bool(self.form_endpoint and
                         self.form_endpoint.startswith(BASIN_PREFIX))
+        if self.provider == 'email_only':
+            return bool(self.receiver_email)
         if self.provider == 'web3forms':
             return bool(self.api_key)
         return False

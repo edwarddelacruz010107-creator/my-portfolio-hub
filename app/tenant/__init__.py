@@ -484,16 +484,24 @@ def billing_history():
 @csrf.exempt
 @limiter.limit(
     "5 per minute; 20 per hour",
-    # v3.7: rate-limit key is per-tenant + per-IP to prevent one tenant being
-    # used to flood another tenant's message inbox
     key_func=lambda: f"{g.get('tenant_slug', 'default')}:{request.headers.get('X-Forwarded-For', request.remote_addr or '').split(',')[0].strip()}"
 )
 def contact():
     """
-    Contact form submission for a non-default tenant (v3.7).
-    Loads per-tenant TenantCommunicationSettings for SMTP/Web3Forms.
+    Contact form submission for a non-default tenant (v5.2).
+
+    Delivery routing (in priority order):
+      1. TenantFormSettings.provider == 'basin'    -> forward to Basin endpoint
+      2. TenantFormSettings.provider == 'disabled' -> CMS inbox only
+      3. Fallback                                  -> MailerSend to contact_email
+
+    The inquiry is ALWAYS saved to DB first. External delivery failure never
+    loses the message.
     """
-    # Honeypot field check
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+
+    # Honeypot
     if request.form.get('website', ''):
         return jsonify(status='success', message='Your message has been sent.')
 
@@ -502,50 +510,135 @@ def contact():
         return jsonify(status='error', message=errors[0]), 400
 
     tenant_slug = g.tenant_slug
-    ip = request.headers.get('X-Forwarded-For', request.remote_addr)
-    if ip and ',' in ip:
+    ip = (request.headers.get('X-Forwarded-For', request.remote_addr) or '')
+    if ',' in ip:
         ip = ip.split(',')[0].strip()
+    ip = ip[:45]
 
-    # Load tenant-specific communication settings
     from app.models.portfolio import Profile as _Profile
+    from app.models.tenant_form_settings import TenantFormSettings
     profile = getattr(g, 'tenant_profile', None) or _Profile.query.filter_by(
         tenant_slug=tenant_slug).first()
-    comm_settings = None
-    if profile:
-        comm_settings = TenantCommunicationSettings.query.filter_by(
-            tenant_id=profile.tenant_id).first()
 
+    form_settings = None
+    if profile and profile.tenant_id:
+        form_settings = TenantFormSettings.for_tenant(profile.tenant_id)
+
+    # Step 1: Persist inquiry — MUST happen before any external delivery
     inquiry = Inquiry(
         tenant_slug=tenant_slug,
-        name=name, email=email,
-        subject=subject, message=message,
+        tenant_id=profile.tenant_id if profile else None,
+        name=name,
+        email=email,
+        subject=subject,
+        message=message,
         ip_address=ip,
+        sender='visitor',
     )
     db.session.add(inquiry)
-    db.session.commit()
+    try:
+        db.session.commit()
+    except Exception as exc:
+        _log.exception('contact: DB commit failed for tenant %s: %s', tenant_slug, exc)
+        db.session.rollback()
+        return jsonify(status='error', message='Unable to save your message. Please try again.'), 500
+
     log_activity('create', 'inquiry', name, f'Contact from {email} to tenant {tenant_slug!r}')
 
-    # ── Email dispatch (v3.8): try Web3Forms first, fall back to SMTP ────────
-    # Resolve contact destination: Tenant.contact_email → comm_settings.admin_email → fallback
-    contact_dest = ''
-    if profile and profile.tenant:
-        contact_dest = (profile.tenant.contact_email or '').strip()
-    if not contact_dest and comm_settings:
-        contact_dest = (comm_settings.admin_email or '').strip()
+    # Step 2: External delivery
+    provider = 'internal'
+    delivery_ok = False
+    delivery_error = ''
 
-    w3f_sent = False
-    if contact_dest:
-        from app.services.email_service import send_contact_form_web3forms
-        portfolio_url = request.host_url.rstrip('/') + f'/{tenant_slug}'
-        w3f_sent = send_contact_form_web3forms(
-            inquiry, contact_dest,
-            comm_settings=comm_settings,
-            portfolio_url=portfolio_url,
+    if form_settings and form_settings.is_enabled:
+        provider = form_settings.provider or 'disabled'
+
+    if provider == 'basin' and form_settings and form_settings.form_endpoint:
+        from app.services.basin_service import submit_to_basin
+        delivery_ok, delivery_error = submit_to_basin(
+            basin_endpoint=form_settings.form_endpoint,
+            name=name,
+            email=email,
+            subject=subject or f'Contact from {name}',
+            message=message,
         )
+        if not delivery_ok:
+            _log.warning('contact[basin]: tenant=%s inquiry_id=%s error=%s',
+                         tenant_slug, inquiry.id, delivery_error)
 
-    if not w3f_sent:
-        # Fall back to SMTP path (send_inquiry_email uses comm_settings for routing)
-        send_inquiry_email(inquiry, comm_settings=comm_settings)
+    elif provider in ('disabled', 'internal'):
+        delivery_ok = True  # CMS inbox only — no external delivery needed
+
+    elif provider == 'email_only':
+        # Deliver via MailerSend to receiver_email from TenantFormSettings
+        recipient = (form_settings.receiver_email or '').strip() if form_settings else ''
+        if not recipient and profile and profile.tenant:
+            recipient = (profile.tenant.contact_email or '').strip()
+        if recipient:
+            from app.services.mailersend_service import send_email_with_retry
+            html_body = (
+                f'<div style="font-family:sans-serif;max-width:600px;padding:1.5rem;'
+                f'border:1px solid #e5e7eb;border-radius:8px;">'
+                f'<h3 style="margin-top:0;">New Contact Form Message</h3>'
+                f'<p><strong>From:</strong> {name} &lt;{email}&gt;</p>'
+                f'<p><strong>Subject:</strong> {subject or "(no subject)"}</p>'
+                f'<hr style="border:none;border-top:1px solid #e5e7eb;">'
+                f'<p style="white-space:pre-wrap;">{message}</p></div>'
+            )
+            delivery_ok = send_email_with_retry(
+                to_email=recipient,
+                subject=f'[Portfolio] New message from {name}',
+                html_content=html_body,
+                text_content=f'From: {name} <{email}>\nSubject: {subject}\n\n{message}',
+                reply_to=email,
+                max_retries=3,
+            )
+            if not delivery_ok:
+                delivery_error = 'MailerSend delivery failed — saved to inbox'
+                _log.warning('contact[email_only]: tenant=%s inquiry_id=%s',
+                             tenant_slug, inquiry.id)
+        else:
+            _log.warning('contact[email_only]: no recipient configured for tenant=%s', tenant_slug)
+            delivery_ok = True  # Message saved to inbox; no address to send to
+
+    else:
+        # Fallback: MailerSend to tenant contact_email
+        contact_dest = ''
+        if profile and profile.tenant:
+            contact_dest = (profile.tenant.contact_email or '').strip()
+        if contact_dest:
+            from app.services.mailersend_service import send_email_with_retry
+            html_body = (
+                f'<p><strong>New contact form submission</strong></p>'
+                f'<p><strong>From:</strong> {name} &lt;{email}&gt;</p>'
+                f'<p><strong>Subject:</strong> {subject or "(no subject)"}</p>'
+                f'<hr><p style="white-space:pre-wrap">{message}</p>'
+            )
+            delivery_ok = send_email_with_retry(
+                to_email=contact_dest,
+                subject=f'[Portfolio] New message from {name}',
+                html_content=html_body,
+                text_content=f'From: {name} <{email}>\nSubject: {subject}\n\n{message}',
+                reply_to=email,
+                max_retries=3,
+            )
+            if not delivery_ok:
+                delivery_error = 'MailerSend delivery failed'
+                _log.warning('contact[mailersend]: tenant=%s inquiry_id=%s',
+                             tenant_slug, inquiry.id)
+
+    # Step 3: Update delivery metadata (graceful — columns may not exist in old schema)
+    try:
+        if hasattr(inquiry, 'provider_used'):
+            inquiry.provider_used = provider
+        if hasattr(inquiry, 'delivery_status'):
+            inquiry.delivery_status = 'delivered' if delivery_ok else 'failed'
+        if hasattr(inquiry, 'delivery_error') and delivery_error:
+            inquiry.delivery_error = delivery_error[:500]
+        db.session.commit()
+    except Exception as exc:
+        _log.warning('contact: delivery metadata update failed: %s', exc)
+        db.session.rollback()
 
     tenant_display = (profile.name if profile else tenant_slug.replace('-', ' ').title())
     return jsonify(

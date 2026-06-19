@@ -1042,7 +1042,9 @@ def register_cli_commands(app):
         from app.models import User
         from app.models.portfolio import Tenant, Profile
 
-        db.create_all()
+        if app.config["ENV"] == "development":
+            with app.app_context():
+                db.create_all()
 
         tenant = Tenant.query.filter_by(slug='default').first()
         if not tenant:
@@ -1285,6 +1287,11 @@ def register_cli_commands(app):
         This is a structural workaround, not a long-term replacement for
         a real `flask db init --multidb` conversion (recommended as a
         separate, carefully-tested follow-up -- see AUDIT_REPORT).
+        
+        FLASK-SQLALCHEMY 3.x COMPATIBILITY FIX:
+        Replaced db.engines['tenant'] with db.get_engine(bind_key='tenant')
+        for Flask-SQLAlchemy 3.x compatibility. The db.engines dict is no
+        longer exposed in Flask-SQLAlchemy 3.x; use get_engine() instead.
         """
         from app.models.tenant_data import (
             Profile,
@@ -1294,28 +1301,31 @@ def register_cli_commands(app):
             Service
         )
 
+        # Get the tenant database engine using Flask-SQLAlchemy 3.x compatible API
+        tenant_engine = db.get_engine(bind_key='tenant')
+
         Profile.__table__.create(
-            bind=db.engines['tenant'],
+            bind=tenant_engine,
             checkfirst=True
         )
 
         Skill.__table__.create(
-            bind=db.engines['tenant'],
+            bind=tenant_engine,
             checkfirst=True
         )
 
         Project.__table__.create(
-            bind=db.engines['tenant'],
+            bind=tenant_engine,
             checkfirst=True
         )
 
         Testimonial.__table__.create(
-            bind=db.engines['tenant'],
+            bind=tenant_engine,
             checkfirst=True
         )
 
         Service.__table__.create(
-            bind=db.engines['tenant'],
+            bind=tenant_engine,
             checkfirst=True
         )
 

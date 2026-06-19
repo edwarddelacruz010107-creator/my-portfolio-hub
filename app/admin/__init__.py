@@ -400,6 +400,11 @@ def dashboard():
     testimonial_query = _tenant_slug_filter(Testimonial.query)
     inquiry_query     = _tenant_slug_filter(Inquiry.query)
 
+    from datetime import date as _date
+    _now_utc     = datetime.now(timezone.utc)
+    _today_start = _now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+    _week_start  = _now_utc - timedelta(days=7)
+
     stats = {
         'total_projects':     project_query.count(),
         'published_projects': project_query.filter_by(status='published').count(),
@@ -407,7 +412,11 @@ def dashboard():
         'total_testimonials': testimonial_query.count(),
         'profile_completion': get_profile_completion(profile) if profile else 0,
         'featured_projects':  project_query.filter_by(is_featured=True).count(),
+        # Message counters
         'unread_messages':    inquiry_query.filter_by(is_read=False).count(),
+        'total_messages':     inquiry_query.count(),
+        'today_messages':     inquiry_query.filter(Inquiry.created_at >= _today_start).count(),
+        'week_messages':      inquiry_query.filter(Inquiry.created_at >= _week_start).count(),
     }
     recent_activity = (
         _tenant_slug_filter(ActivityLog.query)

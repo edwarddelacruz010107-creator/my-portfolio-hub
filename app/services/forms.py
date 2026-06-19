@@ -96,6 +96,17 @@ def send_contact_message(
             name=name, email=email, subject=subject, message=message,
         )
 
+    if settings.provider == 'email_only':
+        recipient = settings.receiver_email or ''
+        if not recipient:
+            logger.error('forms: email_only tenant=%s has no receiver_email', tenant_id)
+            return False, 'Email Only provider has no recipient configured.'
+        return send_email_only_message(
+            recipient_email=recipient,
+            sender_display=settings.sender_name or name,
+            name=name, email=email, subject=subject, message=message,
+        )
+
     if settings.provider == 'web3forms':
         return send_web3forms_message(
             access_key=settings.api_key,          # decrypted in-process, never logged
@@ -164,6 +175,64 @@ def send_basin_message(
     except Exception as exc:
         logger.exception('forms/basin: unexpected error: %s', exc)
         return False, 'Submission error. Please try again.'
+
+
+def send_email_only_message(
+    *,
+    recipient_email: str,
+    sender_display:  str,
+    name:            str,
+    email:           str,
+    subject:         str,
+    message:         str,
+) -> tuple[bool, str]:
+    """
+    Deliver a contact form submission via MailerSend to the tenant's recipient_email.
+
+    The API key is resolved server-side from GlobalEmailConfig (or env).
+    The recipient address comes from TenantFormSettings.receiver_email (DB) —
+    NEVER from client input.
+
+    Returns (success: bool, error_msg: str).
+    """
+    if not recipient_email:
+        return False, 'No recipient email configured.'
+
+    html_body = (
+        f'<div style="font-family:sans-serif;max-width:600px;margin:auto;padding:1.5rem;'
+        f'border:1px solid #e5e7eb;border-radius:8px;">'
+        f'<h3 style="margin-top:0;color:#1f2937;">New Contact Form Message</h3>'
+        f'<p><strong>From:</strong> {name} &lt;{email}&gt;</p>'
+        f'<p><strong>Subject:</strong> {subject or "(no subject)"}</p>'
+        f'<hr style="border:none;border-top:1px solid #e5e7eb;">'
+        f'<p style="white-space:pre-wrap;color:#374151;">{message}</p>'
+        f'<hr style="border:none;border-top:1px solid #e5e7eb;">'
+        f'<p style="font-size:.8rem;color:#9ca3af;">Delivered by Portfolio CMS</p>'
+        f'</div>'
+    )
+    text_body = f'From: {name} <{email}>\nSubject: {subject}\n\n{message}'
+
+    try:
+        from app.services.mailersend_service import send_email_with_retry
+        ok = send_email_with_retry(
+            to_email=recipient_email,
+            subject=f'[Portfolio] New message from {name}',
+            html_content=html_body,
+            text_content=text_body,
+            reply_to=email,
+            max_retries=3,
+        )
+        if ok:
+            logger.info(
+                'forms/email_only: delivered to %s from %s',
+                recipient_email, email,
+            )
+            return True, ''
+        logger.warning('forms/email_only: MailerSend delivery failed to %s', recipient_email)
+        return False, 'Email delivery failed. Message is saved in your CMS inbox.'
+    except Exception as exc:
+        logger.exception('forms/email_only: unexpected error: %s', exc)
+        return False, 'Email delivery error. Message is saved in your CMS inbox.'
 
 
 def send_web3forms_message(
@@ -237,6 +306,11 @@ def validate_provider(settings: TenantFormSettings) -> tuple[bool, str]:
         if len(ep.removeprefix(BASIN_PREFIX)) < 4:
             return False, 'Basin form ID is too short.'
         return True, 'Basin endpoint looks valid.'
+
+    if settings.provider == 'email_only':
+        if not settings.receiver_email:
+            return False, 'Email Only requires a recipient email address.'
+        return True, f'Email Only configured → {settings.receiver_email}'
 
     if settings.provider == 'web3forms':
         if not settings.api_key:

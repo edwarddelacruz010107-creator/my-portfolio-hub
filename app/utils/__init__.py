@@ -409,11 +409,11 @@ def send_inquiry_email(inquiry, comm_settings=None) -> None:
     try:
         from app.services.mailersend_service import send_system_notification
 
-        # Resolve notification destination — tenant admin_email first, then global
+        # Resolve notification destination — per-tenant admin_email first.
         admin_email = ''
         if comm_settings:
             admin_email = (comm_settings.admin_email or '').strip()
-        if not admin_email:
+        if not admin_email and getattr(inquiry, 'tenant_slug', None) in (None, '', 'default'):
             admin_email = (current_app.config.get('ADMIN_EMAIL') or '').strip()
         if not admin_email:
             logger.debug("send_inquiry_email: no admin_email configured, skipping.")
@@ -449,10 +449,15 @@ def validate_contact_payload() -> tuple[list[str], str, str, str, str]:
     """
     data = request.get_json(silent=True) or request.form
 
-    name    = (data.get("name")    or "").strip()
-    email   = (data.get("email")   or "").strip()
-    subject = (data.get("subject") or "").strip()
-    message = (data.get("message") or "").strip()
+    import re as _re
+
+    def _strip_tags(s: str) -> str:
+        return _re.sub(r'<[^>]*?>', '', s or '').strip()
+
+    name    = _strip_tags(data.get("name") or "")
+    email   = (data.get("email") or "").strip()
+    subject = _strip_tags(data.get("subject") or "")
+    message = _strip_tags(data.get("message") or "")
 
     errors: list[str] = []
 
@@ -463,13 +468,18 @@ def validate_contact_payload() -> tuple[list[str], str, str, str, str]:
 
     if not email:
         errors.append("Email address is required.")
-    elif "@" not in email or len(email) > 120:
+    elif len(email) > 200 or not _re.match(r'^[^\s@]+@[^\s@]+\.[^\s@]{2,}$', email):
         errors.append("Please enter a valid email address.")
+
+    if not subject:
+        errors.append("Subject is required.")
+    elif len(subject) > 200:
+        errors.append("Subject must be 200 characters or fewer.")
 
     if not message:
         errors.append("Message is required.")
-    elif len(message) > 5000:
-        errors.append("Message must be 5,000 characters or fewer.")
+    elif len(message) > 2000:
+        errors.append("Message must be 2,000 characters or fewer.")
 
     return errors, name, email, subject, message
 

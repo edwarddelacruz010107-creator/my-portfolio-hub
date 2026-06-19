@@ -278,7 +278,8 @@ def _check_tenant_db():
     required_tables = ["profile", "skills", "projects", "testimonials", "services"]
 
     try:
-        engine = db.engines.get("tenant") if hasattr(db, "engines") else db.get_engine(bind="tenant")
+        # Flask-SQLAlchemy 3.x compatible: use bind_key parameter instead of bind
+        engine = db.get_engine(bind_key='tenant')
     except Exception as exc:  # noqa: BLE001
         result["detail"] = f"tenant bind unavailable: {exc}"
         return result
