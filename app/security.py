@@ -111,19 +111,53 @@ class AccountLockout:
 
     @classmethod
     def is_locked(cls, user) -> bool:
-        if not user.failed_login_attempts or user.failed_login_attempts < cls.MAX_FAILED_ATTEMPTS:
+
+        if not user.failed_login_attempts:
             return False
+
+        if user.failed_login_attempts < cls.MAX_FAILED_ATTEMPTS:
+            return False
+
         if not user.last_failed_login_at:
             return False
-        last_failed_login_at = _normalize_to_utc(user.last_failed_login_at)
-        lockout_end = last_failed_login_at + timedelta(minutes=cls.LOCKOUT_DURATION_MINUTES)
-        return datetime.now(timezone.utc) < lockout_end
+
+
+        last_failed_login_at = _normalize_to_utc(
+            user.last_failed_login_at
+        )
+
+        lockout_end = (
+            last_failed_login_at +
+            timedelta(minutes=cls.LOCKOUT_DURATION_MINUTES)
+        )
+
+
+        now = datetime.now(timezone.utc)
+
+
+        # cooldown finished
+        if now >= lockout_end:
+
+            user.failed_login_attempts = 0
+            user.last_failed_login_at = None
+
+            db.session.commit()
+
+            logger.info(
+                "Account lockout expired for %s",
+                user.username
+            )
+
+            return False
+
+
+        return True
 
     @classmethod
     def get_lockout_remaining(cls, user) -> int:
         if not cls.is_locked(user):
             return 0
-        lockout_end = user.last_failed_login_at + timedelta(minutes=cls.LOCKOUT_DURATION_MINUTES)
+        lockout_end = (_normalize_to_utc(user.last_failed_login_at) + timedelta(minutes=cls.LOCKOUT_DURATION_MINUTES))
         remaining = (lockout_end - datetime.now(timezone.utc)).total_seconds()
         return max(0, int(remaining))
 
