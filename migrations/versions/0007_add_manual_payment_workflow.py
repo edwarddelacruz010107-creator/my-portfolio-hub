@@ -17,8 +17,13 @@ depends_on = None
 def upgrade():
     now = datetime.now(timezone.utc)
     conn = op.get_bind()
+    inspector = sa.inspect(conn)
 
-    try:
+    # FIXED: both tables are now created by 0001_initial_schema.py.
+    # try/except around create_table does not protect against
+    # InFailedSqlTransaction (Postgres aborts the whole transaction on
+    # the DDL error; Python catching the exception doesn't undo that).
+    if not inspector.has_table('payment_instructions'):
         op.create_table(
             'payment_instructions',
             sa.Column('id', sa.Integer, primary_key=True),
@@ -34,10 +39,8 @@ def upgrade():
             sa.Column('created_at', sa.DateTime(timezone=True), nullable=False, server_default=sa.text('NOW()')),
             sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False, server_default=sa.text('NOW()')),
         )
-    except Exception:
-        pass
 
-    try:
+    if not inspector.has_table('payment_submissions'):
         op.create_table(
             'payment_submissions',
             sa.Column('id', sa.Integer, primary_key=True),
@@ -54,8 +57,6 @@ def upgrade():
             sa.Column('reviewed_by', sa.String(length=120), nullable=False, server_default=''),
             sa.Column('review_notes', sa.Text, nullable=True),
         )
-    except Exception:
-        pass
 
 
 def downgrade():

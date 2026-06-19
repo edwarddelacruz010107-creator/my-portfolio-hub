@@ -79,12 +79,32 @@ with _app.app_context():
 target_metadata = db.metadata
 
 # ── Alembic diff options ──────────────────────────────────────────────────────
+def include_object(obj, name, type_, reflected, compare_to):
+    """
+    Filter function for Alembic autogenerate.
+    
+    Excludes tables that have table.info['bind_key'] == 'tenant' from
+    core migration generation. This prevents tenant-bound models from
+    polluting core migrations.
+    
+    Tenant-bound tables should only appear in migrations/tenant/versions/
+    (if using a separate tenant migration chain) or handled via the
+    cli_ensure_tenant_schema command.
+    """
+    if type_ == 'table':
+        # Exclude tables marked as tenant-bound
+        if hasattr(obj, 'info') and obj.info.get('bind_key') == 'tenant':
+            return False
+    return True
+
+
 _ALEMBIC_OPTS = dict(
     target_metadata=target_metadata,
     compare_type=True,
     compare_server_default=True,
     include_schemas=False,
     render_as_batch=False,
+    include_object=include_object,
 )
 
 

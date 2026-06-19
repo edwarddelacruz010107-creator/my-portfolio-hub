@@ -10,7 +10,7 @@ import sqlalchemy as sa
 from sqlalchemy import inspect, text
 
 revision = '0008_add_user_security_fields'
-down_revision = '001_backfill_default_tenant'
+down_revision = '0007_add_manual_payment_workflow'  # FIXED: was '001_backfill_default_tenant' (missing; '0010_backfill_default_tenant' would create a cycle)
 branch_labels = None
 depends_on = None
 

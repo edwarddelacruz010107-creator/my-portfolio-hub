@@ -11,7 +11,7 @@ from alembic import op
 import sqlalchemy as sa
 
 revision = '0003_add_license_and_trial_columns'
-down_revision = '0002_tenant_url_refactor'
+down_revision = '7d0f3492b2b3'  # FIXED: was '0002_tenant_url_refactor' (file does not exist)
 branch_labels = None
 depends_on = None
 

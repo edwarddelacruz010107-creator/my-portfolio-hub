@@ -25,6 +25,9 @@ depends_on    = None
 
 
 def upgrade():
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+
     # ── 1. ENUM type ──────────────────────────────────────────────────────────
     provider_enum = postgresql.ENUM(
         'basin', 'web3forms', 'disabled',
@@ -33,31 +36,33 @@ def upgrade():
     )
     provider_enum.create(op.get_bind(), checkfirst=True)
 
-    # ── 2. tenant_form_settings table ─────────────────────────────────────────
-    op.create_table(
-        'tenant_form_settings',
-        sa.Column('id',               sa.Integer,      primary_key=True),
-        sa.Column('tenant_id',        sa.Integer,
-                  sa.ForeignKey('tenants.id', ondelete='CASCADE'),
-                  nullable=False, index=True),
-        sa.Column('provider',         sa.Enum('basin', 'web3forms', 'disabled',
-                                              name='form_provider_enum'),
-                  nullable=False, server_default='disabled'),
-        sa.Column('api_key_encrypted', sa.Text,         nullable=False, server_default=''),
-        sa.Column('form_endpoint',    sa.Text,          nullable=True),
-        sa.Column('receiver_email',   sa.String(200),   nullable=True),
-        sa.Column('sender_name',      sa.String(200),   nullable=True),
-        sa.Column('is_enabled',       sa.Boolean,       nullable=False, server_default='false'),
-        sa.Column('created_at',       sa.DateTime(timezone=True),
-                  server_default=sa.text('NOW()')),
-        sa.Column('updated_at',       sa.DateTime(timezone=True),
-                  server_default=sa.text('NOW()')),
-        sa.UniqueConstraint('tenant_id', name='uq_tenant_form_settings'),
-    )
+    # FIXED: 'tenant_form_settings' is now created by 0001_initial_schema.py.
+    if not inspector.has_table('tenant_form_settings'):
+        # ── 2. tenant_form_settings table ─────────────────────────────────────────
+        op.create_table(
+            'tenant_form_settings',
+            sa.Column('id',               sa.Integer,      primary_key=True),
+            sa.Column('tenant_id',        sa.Integer,
+                      sa.ForeignKey('tenants.id', ondelete='CASCADE'),
+                      nullable=False, index=True),
+            sa.Column('provider',         sa.Enum('basin', 'web3forms', 'disabled',
+                                                  name='form_provider_enum'),
+                      nullable=False, server_default='disabled'),
+            sa.Column('api_key_encrypted', sa.Text,         nullable=False, server_default=''),
+            sa.Column('form_endpoint',    sa.Text,          nullable=True),
+            sa.Column('receiver_email',   sa.String(200),   nullable=True),
+            sa.Column('sender_name',      sa.String(200),   nullable=True),
+            sa.Column('is_enabled',       sa.Boolean,       nullable=False, server_default='false'),
+            sa.Column('created_at',       sa.DateTime(timezone=True),
+                      server_default=sa.text('NOW()')),
+            sa.Column('updated_at',       sa.DateTime(timezone=True),
+                      server_default=sa.text('NOW()')),
+            sa.UniqueConstraint('tenant_id', name='uq_tenant_form_settings'),
+        )
 
-    # ── 3. Extra indexes ──────────────────────────────────────────────────────
-    op.create_index('ix_tfs_provider',   'tenant_form_settings', ['provider'])
-    op.create_index('ix_tfs_is_enabled', 'tenant_form_settings', ['is_enabled'])
+        # ── 3. Extra indexes ──────────────────────────────────────────────────────
+        op.create_index('ix_tfs_provider',   'tenant_form_settings', ['provider'])
+        op.create_index('ix_tfs_is_enabled', 'tenant_form_settings', ['is_enabled'])
 
     # ── 4. updated_at trigger (PostgreSQL only) ───────────────────────────────
     op.execute("""

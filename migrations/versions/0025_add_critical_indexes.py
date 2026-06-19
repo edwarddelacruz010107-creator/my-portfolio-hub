@@ -1,8 +1,15 @@
 """0025 — Add critical performance and tenant-isolation indexes
 
 Revision ID: 0025
-Revises: (auto-detected by Alembic head)
+Revises: 0024_tenant_mailersend_migration
 Create Date: 2026-06-17
+
+PATCH-01 (2026-06-19):
+  BUG: down_revision was `None` with comment "Will be set by Alembic to current head"
+  FIX: Alembic never auto-sets down_revision. None declares a new independent root,
+       creating a branch fork. Correct value is '0024_tenant_mailersend_migration'.
+  IMPACT: This one-line fix eliminates the '0025 → 0026 → 0027' orphaned sub-chain
+          that was causing "Multiple head revisions" CommandError in flask db upgrade.
 
 Rationale:
   - tenant_slug is the primary multi-tenant filter on every query.
@@ -20,7 +27,7 @@ from sqlalchemy.engine import reflection
 
 # revision identifiers, used by Alembic
 revision = '0025'
-down_revision = None  # Will be set by Alembic to current head
+down_revision = '0024_tenant_mailersend_migration'   # PATCHED: was None
 branch_labels = None
 depends_on = None
 

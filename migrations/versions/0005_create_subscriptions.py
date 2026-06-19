@@ -19,9 +19,16 @@ depends_on = None
 
 def upgrade():
     conn = op.get_bind()
+    inspector = sa.inspect(conn)
 
-    # Create subscriptions table
-    try:
+    # FIXED: 'subscriptions' is now created by 0001_initial_schema.py.
+    # The previous try/except around create_table() did NOT prevent the
+    # bug: Postgres aborts the whole transaction on the first DDL error
+    # (relation already exists), and a Python try/except cannot undo
+    # that server-side abort -- the very next statement on this
+    # connection then raises psycopg2.errors.InFailedSqlTransaction.
+    # A real has_table() check is required, not exception-swallowing.
+    if not inspector.has_table('subscriptions'):
         op.create_table(
             'subscriptions',
             sa.Column('id', sa.Integer, primary_key=True),
@@ -37,8 +44,6 @@ def upgrade():
             sa.Column('created_at', sa.DateTime(timezone=True), nullable=True),
             sa.Column('updated_at', sa.DateTime(timezone=True), nullable=True),
         )
-    except Exception:
-        pass
 
     # Migrate legacy license data from profile into subscriptions
     try:

@@ -16,32 +16,40 @@ from alembic import op
 import sqlalchemy as sa
 
 revision      = '0019_inquiry_replies'
-down_revision = '0018_auth_otp_web3forms'
+down_revision = '003_tenant_comm_settings'
 branch_labels = None
 depends_on    = None
 
 
 def upgrade():
-    # ── 1. inquiry_replies table ─────────────────────────────────────────────
-    op.create_table(
-        'inquiry_replies',
-        sa.Column('id',          sa.Integer,                nullable=False),
-        sa.Column('inquiry_id',  sa.Integer,                nullable=False),
-        sa.Column('tenant_slug', sa.String(120),            nullable=False),
-        sa.Column('direction',   sa.String(20),             nullable=False),
-        sa.Column('sender_name', sa.String(120),            nullable=False),
-        sa.Column('message',     sa.Text,                   nullable=False),
-        sa.Column('is_read',     sa.Boolean, default=False, nullable=False),
-        sa.Column('created_at',  sa.DateTime(timezone=True), nullable=True),
-        sa.PrimaryKeyConstraint('id'),
-        sa.ForeignKeyConstraint(
-            ['inquiry_id'], ['inquiries.id'],
-            ondelete='CASCADE',
-        ),
-    )
-    op.create_index('ix_reply_inquiry_id',     'inquiry_replies', ['inquiry_id'])
-    op.create_index('ix_reply_tenant_slug',    'inquiry_replies', ['tenant_slug'])
-    op.create_index('ix_reply_direction_read', 'inquiry_replies', ['direction', 'is_read'])
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+
+    # FIXED: 'inquiry_replies' (table + its 3 indexes) is now created by
+    # 0001_initial_schema.py. The 'inquiries' add_column calls below are
+    # NOT duplicated (0001's inquiries table predates these columns) and
+    # are kept as-is.
+    if not inspector.has_table('inquiry_replies'):
+        # ── 1. inquiry_replies table ─────────────────────────────────────────────
+        op.create_table(
+            'inquiry_replies',
+            sa.Column('id',          sa.Integer,                nullable=False),
+            sa.Column('inquiry_id',  sa.Integer,                nullable=False),
+            sa.Column('tenant_slug', sa.String(120),            nullable=False),
+            sa.Column('direction',   sa.String(20),             nullable=False),
+            sa.Column('sender_name', sa.String(120),            nullable=False),
+            sa.Column('message',     sa.Text,                   nullable=False),
+            sa.Column('is_read',     sa.Boolean, default=False, nullable=False),
+            sa.Column('created_at',  sa.DateTime(timezone=True), nullable=True),
+            sa.PrimaryKeyConstraint('id'),
+            sa.ForeignKeyConstraint(
+                ['inquiry_id'], ['inquiries.id'],
+                ondelete='CASCADE',
+            ),
+        )
+        op.create_index('ix_reply_inquiry_id',     'inquiry_replies', ['inquiry_id'])
+        op.create_index('ix_reply_tenant_slug',    'inquiry_replies', ['tenant_slug'])
+        op.create_index('ix_reply_direction_read', 'inquiry_replies', ['direction', 'is_read'])
 
     # ── 2. inquiries — thread tracking columns ───────────────────────────────
     with op.batch_alter_table('inquiries', schema=None) as batch_op:

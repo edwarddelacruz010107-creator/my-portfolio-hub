@@ -88,7 +88,7 @@ def form_settings():
         else:
             settings.form_endpoint = None
 
-        # API key: only update if a new value was provided
+        # API key: only update if a new value was provided (basin doesn't use one)
         new_key = (form.api_key.data or '').strip()
         if new_key:
             try:
@@ -105,14 +105,6 @@ def form_settings():
                     form=form,
                     settings=settings,
                 )
-        elif form.provider.data == 'web3forms' and not settings._api_key_encrypted:
-            # Web3Forms without any stored key → reject
-            flash('Web3Forms requires an API key. Please enter your access_key.', 'error')
-            return render_template(
-                'admin/settings/form_settings.html',
-                form=form,
-                settings=settings,
-            )
 
         db.session.commit()
         logger.info('admin_forms: tenant=%s saved provider=%s', tenant_id, settings.provider)

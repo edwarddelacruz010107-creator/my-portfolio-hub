@@ -16,13 +16,17 @@ depends_on = None
 
 
 def upgrade():
-    op.create_table(
-        'platform_settings',
-        sa.Column('key', sa.String(100), nullable=False),
-        sa.Column('value', sa.String(500), nullable=False, server_default=''),
-        sa.Column('updated_at', sa.DateTime(timezone=True), nullable=True),
-        sa.PrimaryKeyConstraint('key'),
-    )
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    # FIXED: 'platform_settings' is now created by 0001_initial_schema.py.
+    if not inspector.has_table('platform_settings'):
+        op.create_table(
+            'platform_settings',
+            sa.Column('key', sa.String(100), nullable=False),
+            sa.Column('value', sa.String(500), nullable=False, server_default=''),
+            sa.Column('updated_at', sa.DateTime(timezone=True), nullable=True),
+            sa.PrimaryKeyConstraint('key'),
+        )
 
 
 def downgrade():

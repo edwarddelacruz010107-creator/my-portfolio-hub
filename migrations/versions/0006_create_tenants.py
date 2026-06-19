@@ -18,19 +18,26 @@ depends_on = None
 def upgrade():
     conn = op.get_bind()
     now = datetime.now(timezone.utc)
+    inspector = sa.inspect(conn)
 
-    # Create tenant registry.
-    op.create_table(
-        'tenants',
-        sa.Column('id', sa.Integer, primary_key=True),
-        sa.Column('slug', sa.String(length=120), nullable=False, unique=True, index=True),
-        sa.Column('company_name', sa.String(length=200), nullable=False, server_default=''),
-        sa.Column('email', sa.String(length=120), nullable=False, server_default=''),
-        sa.Column('status', sa.String(length=50), nullable=False, server_default='active'),
-        sa.Column('plan', sa.String(length=50), nullable=False, server_default='Basic'),
-        sa.Column('created_at', sa.DateTime(timezone=True), nullable=False, server_default=sa.text('NOW()')),
-        sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False, server_default=sa.text('NOW()')),
-    )
+    # FIXED: 'tenants' is now created by 0001_initial_schema.py. The
+    # unconditional create_table() here caused
+    # psycopg2.errors.InFailedSqlTransaction (relation "tenants" already
+    # exists) on every fresh install. Guarded with has_table() so this
+    # remains a safe no-op on both fresh DBs (table from 0001) and
+    # legacy DBs that predate 0001 (table didn't exist yet here).
+    if not inspector.has_table('tenants'):
+        op.create_table(
+            'tenants',
+            sa.Column('id', sa.Integer, primary_key=True),
+            sa.Column('slug', sa.String(length=120), nullable=False, unique=True, index=True),
+            sa.Column('company_name', sa.String(length=200), nullable=False, server_default=''),
+            sa.Column('email', sa.String(length=120), nullable=False, server_default=''),
+            sa.Column('status', sa.String(length=50), nullable=False, server_default='active'),
+            sa.Column('plan', sa.String(length=50), nullable=False, server_default='Basic'),
+            sa.Column('created_at', sa.DateTime(timezone=True), nullable=False, server_default=sa.text('NOW()')),
+            sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False, server_default=sa.text('NOW()')),
+        )
 
     # Populate tenants from existing profiles using preserved profile IDs.
     try:
