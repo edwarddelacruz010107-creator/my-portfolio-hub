@@ -320,8 +320,8 @@ def _handle_login(require_admin: bool = False, require_superadmin: bool = False,
             User.query.filter_by(email=username_or_email).first()
         )
 
-        if user and AccountLockout.is_locked(user):
-            remaining = AccountLockout.get_lockout_remaining(user)
+        if user and AccountLockout.is_locked(user, db):
+            remaining = AccountLockout.get_lockout_remaining(user, db)
             minutes   = (remaining + 59) // 60
             flash(
                 f'Account locked due to too many failed login attempts. '
@@ -336,8 +336,8 @@ def _handle_login(require_admin: bool = False, require_superadmin: bool = False,
         if not password_valid:
             if user:
                 AccountLockout.record_failed_attempt(user, db)
-                if AccountLockout.is_locked(user):
-                    remaining = AccountLockout.get_lockout_remaining(user)
+                if AccountLockout.is_locked(user, db):
+                    remaining = AccountLockout.get_lockout_remaining(user, db)
                     minutes   = (remaining + 59) // 60
                     flash(
                         f'Account locked. Too many failed attempts. '
