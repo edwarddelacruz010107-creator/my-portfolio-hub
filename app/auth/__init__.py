@@ -63,7 +63,7 @@ auth   = Blueprint('auth', __name__)
 _DEFAULT_TENANT_SLUG = 'default'
 
 TOTP_MAX_ATTEMPTS   = 5
-TOTP_ATTEMPT_WINDOW = timedelta(minutes=10)
+TOTP_ATTEMPT_WINDOW = timedelta(minutes=5)
 TOTP_WINDOW_SECS    = int(TOTP_ATTEMPT_WINDOW.total_seconds())
 
 # HIGH-04 FIX: In-memory _totp_attempts dict replaced with Redis-backed counters.
@@ -320,7 +320,7 @@ def _handle_login(require_admin: bool = False, require_superadmin: bool = False,
             User.query.filter_by(email=username_or_email).first()
         )
 
-        if user and AccountLockout.is_locked(user):
+        if user and AccountLockout.is_locked(user, db):
             remaining = AccountLockout.get_lockout_remaining(user)
             minutes   = (remaining + 59) // 60
             flash(
@@ -336,7 +336,7 @@ def _handle_login(require_admin: bool = False, require_superadmin: bool = False,
         if not password_valid:
             if user:
                 AccountLockout.record_failed_attempt(user, db)
-                if AccountLockout.is_locked(user):
+                if AccountLockout.is_locked(user, db):
                     remaining = AccountLockout.get_lockout_remaining(user)
                     minutes   = (remaining + 59) // 60
                     flash(
