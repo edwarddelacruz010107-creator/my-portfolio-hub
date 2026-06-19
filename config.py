@@ -202,11 +202,12 @@ class BaseConfig:
     @staticmethod
     def init_app(app):
         """Initialize upload directories."""
-        upload_base = os.path.join(basedir, 'storage', 'uploads')
+        upload_base = os.path.join(basedir, 'static', 'uploads')
         os.makedirs(upload_base, exist_ok=True)
         os.makedirs(os.path.join(upload_base, 'profiles'), exist_ok=True)
         os.makedirs(os.path.join(upload_base, 'projects'), exist_ok=True)
         os.makedirs(os.path.join(upload_base, 'avatars'), exist_ok=True)
+        os.makedirs(os.path.join(upload_base, 'billing'), exist_ok=True)
         os.makedirs(BaseConfig.LOG_DIR, exist_ok=True)
         
         app.config['UPLOAD_FOLDER'] = upload_base
