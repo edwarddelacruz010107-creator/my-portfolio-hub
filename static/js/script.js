@@ -341,34 +341,20 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             try {
-                const web3key = contactForm.dataset.web3formsKey;
                 const fallbackUrl = contactForm.dataset.fallbackUrl;
 
-                if (web3key) {
-                    const payload = {
-                        access_key: web3key,
-                        name: sanitise(formFields.name.el.value),
-                        email: sanitise(formFields.email.el.value),
-                        subject: sanitise(formFields.subject.el.value),
-                        message: sanitise(formFields.message.el.value),
-                        botcheck: ''
-                    };
-                    const res = await fetch(WEB3FORMS_API, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-                        body: JSON.stringify(payload)
-                    });
-                    const result = await res.json();
-                    if (!res.ok || result.success !== true) throw new Error(result.message || 'Submission failed.');
-                    // Also save to DB
+                const sidEl = document.getElementById('submissionId');
+                if (sidEl && !sidEl.value) {
                     try {
-                        await fetch(fallbackUrl || '/contact', { method: 'POST', body: new FormData(contactForm) });
-                    } catch(dbErr) { console.warn('[ContactForm] DB save failed:', dbErr); }
-                } else {
-                    const res = await fetch(fallbackUrl || '/contact', { method: 'POST', body: new FormData(contactForm) });
-                    const result = await res.json();
-                    if (!res.ok || result.status !== 'success') throw new Error(result.message || 'Send failed.');
+                        sidEl.value = (crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now()) + '-' + Math.random().toString(16).slice(2);
+                    } catch (_) {
+                        sidEl.value = String(Date.now()) + '-' + Math.random().toString(16).slice(2);
+                    }
                 }
+
+                const res = await fetch(fallbackUrl || '/contact', { method: 'POST', body: new FormData(contactForm) });
+                const result = await res.json();
+                if (!res.ok || result.status !== 'success') throw new Error(result.message || 'Send failed.');
 
                 lastSubmitTime = Date.now();
                 showSuccessOverlay();
