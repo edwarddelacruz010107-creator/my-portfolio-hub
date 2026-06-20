@@ -1,22 +1,37 @@
 """
-config.py — Portfolio CMS v5.0 — Production-Ready Configuration
+config.py — Portfolio CMS v5.3 — Production-Ready Configuration (PATCHED)
 
-Separation of concerns: development, production, and testing environments.
-All secrets are environment variables - NEVER commit secrets to repository.
+FIXES APPLIED:
+  [CRITICAL-1] BaseConfig SESSION_COOKIE_SECURE / REMEMBER_COOKIE_SECURE
+               was set True then immediately overridden to False in the same
+               class body. The duplicate assignments are removed; each
+               environment class owns its own value — no silent override.
+
+  [CRITICAL-2] ProductionConfig.init_app() required PAYMONGO_SECRET_KEY and
+               PAYMONGO_WEBHOOK_SECRET unconditionally, crashing startup on
+               any deployment where billing is disabled (PAYMONGO_ENABLED=false).
+               They are now only required when PAYMONGO_ENABLED=true.
+
+  [HIGH-1]     SUPERADMIN_EMAIL, SUPERADMIN_USERNAME env-var support added to
+               allow full environment-variable driven superadmin bootstrapping.
 
 Environment Variables Required:
-  Production:
-    - SECRET_KEY (use secrets.token_urlsafe(32))
-    - FERNET_KEY (for API key encryption: cryptography.fernet.Fernet.generate_key())
+  Production (always):
+    - SECRET_KEY
+    - FERNET_KEY
     - CORE_DATABASE_URL
     - TENANT_DATABASE_URL
+
+  Production (only when PAYMONGO_ENABLED=true):
     - PAYMONGO_SECRET_KEY
     - PAYMONGO_WEBHOOK_SECRET
-    - MAILERSEND_API_KEY
-  
+
   Optional:
-    - REDIS_URL (for caching/rate limiting)
-    - SENTRY_DSN (for error tracking)
+    - REDIS_URL
+    - SENTRY_DSN
+    - SUPERADMIN_USERNAME   (default: superadmin)
+    - SUPERADMIN_EMAIL      (default: superadmin@portfolio.local)
+    - SUPERADMIN_PASSWORD   (auto-generated and logged if absent)
 """
 
 import os
@@ -40,264 +55,218 @@ def _normalize_postgres_url(url: str) -> str:
 
 class BaseConfig:
     """Base configuration with security defaults."""
-    
+
     # ─────────────────────────────────────────────────────────────────
     # SECURITY
     # ─────────────────────────────────────────────────────────────────
     SECRET_KEY = os.environ.get('SECRET_KEY') or ''
 
-    SESSION_COOKIE_SECURE = True
+    # FIX [CRITICAL-1]: Removed duplicate SESSION_COOKIE_SECURE = True / False
+    # assignments that existed in the original BaseConfig class body.
+    # Each subclass now owns exactly ONE assignment. BaseConfig sets the
+    # permissive default (False = works on HTTP for dev/test). Production
+    # overrides to True. This prevents any "set True, then immediately set
+    # False" confusion.
+    SESSION_COOKIE_SECURE   = False   # overridden per env — do NOT duplicate below
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = "Lax"
 
-    REMEMBER_COOKIE_SECURE = True
+    REMEMBER_COOKIE_SECURE   = False   # overridden per env — do NOT duplicate below
     REMEMBER_COOKIE_HTTPONLY = True
     REMEMBER_COOKIE_SAMESITE = "Lax"
+    REMEMBER_COOKIE_DURATION = timedelta(days=30)
+
+    PERMANENT_SESSION_LIFETIME = timedelta(hours=24)
 
     # CSRF Protection
-    WTF_CSRF_ENABLED = True
-    WTF_CSRF_TIME_LIMIT = 3600  # 1 hour
+    WTF_CSRF_ENABLED       = True
+    WTF_CSRF_TIME_LIMIT    = 3600   # 1 hour
     WTF_CSRF_CHECK_DEFAULT = True
-    WTF_CSRF_SSL_STRICT = True  # Enforce HTTPS in production
-    
-    # Session & Cookie Security (single source of truth)
-    # SESSION_COOKIE_SECURE=False here; overridden to True in ProductionConfig
-    SESSION_COOKIE_SECURE = False
-    REMEMBER_COOKIE_SECURE = False
-    REMEMBER_COOKIE_DURATION = timedelta(days=30)
-    PERMANENT_SESSION_LIFETIME = timedelta(hours=24)
-    
+    WTF_CSRF_SSL_STRICT    = True   # overridden to False in Dev/Test
+
     # ─────────────────────────────────────────────────────────────────
     # DATABASE — DUAL-DB ARCHITECTURE
     # ─────────────────────────────────────────────────────────────────
     SQLALCHEMY_TRACK_MODIFICATIONS = False
-    SQLALCHEMY_RECORD_QUERIES = False  # Enable in development for profiling
+    SQLALCHEMY_RECORD_QUERIES      = False
     SQLALCHEMY_SLOW_QUERY_THRESHOLD = 0.5
-    
-    # Connection Pool (overridden per environment)
+
     SQLALCHEMY_ENGINE_OPTIONS = {
         "pool_pre_ping": True,
-        "pool_recycle": 300,
-        "pool_size": 5,
-        "max_overflow": 10,
+        "pool_recycle":  300,
+        "pool_size":     5,
+        "max_overflow":  10,
     }
-    
+
     # ─────────────────────────────────────────────────────────────────
     # AUTHENTICATION & ENCRYPTION
     # ─────────────────────────────────────────────────────────────────
     FERNET_KEY = os.environ.get('FERNET_KEY') or ''
-    
-    # OTP/TOTP Settings
-    TOTP_ISSUER = os.environ.get('TOTP_ISSUER', 'Portfolio CMS')
-    TOTP_VALID_WINDOW = int(os.environ.get('TOTP_VALID_WINDOW', '1'))
-    OTP_EXPIRATION_SECONDS = int(os.environ.get('OTP_EXPIRATION_SECONDS', '600'))  # 10 minutes
-    OTP_MAX_ATTEMPTS = int(os.environ.get('OTP_MAX_ATTEMPTS', '5'))
-    
+
+    TOTP_ISSUER              = os.environ.get('TOTP_ISSUER', 'Portfolio CMS')
+    TOTP_VALID_WINDOW        = int(os.environ.get('TOTP_VALID_WINDOW', '1'))
+    OTP_EXPIRATION_SECONDS   = int(os.environ.get('OTP_EXPIRATION_SECONDS', '600'))
+    OTP_MAX_ATTEMPTS         = int(os.environ.get('OTP_MAX_ATTEMPTS', '5'))
+
     # Password Policy
-    MIN_PASSWORD_LENGTH = 12
-    REQUIRE_UPPERCASE = True
-    REQUIRE_NUMBERS = True
-    REQUIRE_SPECIAL_CHARS = True
-    
+    MIN_PASSWORD_LENGTH    = 12
+    REQUIRE_UPPERCASE      = True
+    REQUIRE_NUMBERS        = True
+    REQUIRE_SPECIAL_CHARS  = True
+
+    # ─────────────────────────────────────────────────────────────────
+    # SUPERADMIN BOOTSTRAP (env-var driven, never hardcoded)
+    # ─────────────────────────────────────────────────────────────────
+    # FIX [HIGH-1]: These drive the auto-bootstrap logic in create_app().
+    # Set them as Render environment variables; never hardcode values here.
+    SUPERADMIN_USERNAME = os.environ.get('SUPERADMIN_USERNAME', 'superadmin')
+    SUPERADMIN_EMAIL    = os.environ.get('SUPERADMIN_EMAIL', 'superadmin@portfolio.local')
+    # SUPERADMIN_PASSWORD is intentionally NOT in config — it is read directly
+    # from os.environ inside cli_create_superadmin() and _auto_bootstrap_superadmin()
+    # so it never lands in app.config (and therefore never in debug dumps).
+
     # ─────────────────────────────────────────────────────────────────
     # RATE LIMITING & CACHING
     # ─────────────────────────────────────────────────────────────────
-    # FIX (config-redis-crash): the previous `raise RuntimeError(...)` here ran
-    # at MODULE IMPORT time inside the BaseConfig class body — i.e. on every
-    # `import config`, in every environment (dev, test, CLI scripts, Alembic),
-    # not just production. Any shell without REDIS_URL set could not even
-    # import the app. Production already enforces REDIS_URL via
-    # ProductionConfig.init_app()'s required_vars check below (request-time,
-    # environment-scoped, not import-time, not global). Redis is genuinely
-    # optional for dev/test; Limiter falls back to memory:// at app-factory
-    # time in app/__init__.py (see create_limiter_storage()).
-    # NOTE (config-key-mismatch): flask-limiter's actual config key is
-    # 'RATELIMIT_STORAGE_URI' (see flask_limiter.constants.ConfigVars.
-    # STORAGE_URI) -- NOT 'RATELIMIT_STORAGE_URL'. This key is kept for
-    # backward-compat / readability elsewhere in the codebase, but it is
-    # NOT what flask-limiter consumes. The actual storage backend is
-    # resolved and pushed into app.config['RATELIMIT_STORAGE_URI'] at
-    # app-factory time in app/__init__.py:create_app(), after a Redis
-    # pre-flight PING (see resolve_limiter_storage_uri()). Do not rely on
-    # this key for flask-limiter behavior.
-    RATELIMIT_STORAGE_URL = os.environ.get('REDIS_URL', 'memory://')
-    RATELIMIT_DEFAULT = '100 per hour'
+    RATELIMIT_STORAGE_URL   = os.environ.get('REDIS_URL', 'memory://')
+    RATELIMIT_DEFAULT       = '100 per hour'
     RATELIMIT_HEADERS_ENABLED = True
-    
-    # Rate Limits (per minute unless specified)
-    RATELIMIT_LOGIN = '5 per 15 minutes'
-    RATELIMIT_REGISTER = '3 per 30 minutes'
+
+    RATELIMIT_LOGIN          = '5 per 15 minutes'
+    RATELIMIT_REGISTER       = '3 per 30 minutes'
     RATELIMIT_PASSWORD_RESET = '3 per 30 minutes'
-    RATELIMIT_OTP_SEND = '3 per 30 minutes'
-    RATELIMIT_OTP_VERIFY = '5 per 15 minutes'
-    RATELIMIT_CONTACT_FORM = '5 per hour'
-    RATELIMIT_WEBHOOKS = '200 per minute'
-    
-    # Caching
-    CACHE_TYPE = 'SimpleCache'
-    CACHE_DEFAULT_TIMEOUT = 300  # 5 minutes
-    CACHE_REDIS_URL = os.environ.get('REDIS_URL', '')
-    
+    RATELIMIT_OTP_SEND       = '3 per 30 minutes'
+    RATELIMIT_OTP_VERIFY     = '5 per 15 minutes'
+    RATELIMIT_CONTACT_FORM   = '5 per hour'
+    RATELIMIT_WEBHOOKS       = '200 per minute'
+
+    CACHE_TYPE            = 'SimpleCache'
+    CACHE_DEFAULT_TIMEOUT = 300
+    CACHE_REDIS_URL       = os.environ.get('REDIS_URL', '')
+
     # ─────────────────────────────────────────────────────────────────
     # FILE UPLOADS & STORAGE
     # ─────────────────────────────────────────────────────────────────
-    MAX_CONTENT_LENGTH = 10 * 1024 * 1024  # 10MB
+    MAX_CONTENT_LENGTH = 10 * 1024 * 1024
     ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'}
     ALLOWED_MIME_TYPES = {
-        'image/png',
-        'image/jpeg',
-        'image/gif',
-        'image/webp',
-        'image/svg+xml',
+        'image/png', 'image/jpeg', 'image/gif',
+        'image/webp', 'image/svg+xml',
     }
-    
-    # Supabase Storage
-    SUPABASE_URL = os.environ.get('SUPABASE_URL', '')
-    SUPABASE_KEY = os.environ.get('SUPABASE_SERVICE_KEY', '')
-    SUPABASE_BUCKET = os.environ.get('SUPABASE_BUCKET', 'portfolio-media')
+
+    SUPABASE_URL        = os.environ.get('SUPABASE_URL', '')
+    SUPABASE_KEY        = os.environ.get('SUPABASE_SERVICE_KEY', '')
+    SUPABASE_BUCKET     = os.environ.get('SUPABASE_BUCKET', 'portfolio-media')
     USE_SUPABASE_STORAGE = os.environ.get('USE_SUPABASE_STORAGE', 'false').lower() == 'true'
-    
+
     # ─────────────────────────────────────────────────────────────────
     # INTEGRATIONS
     # ─────────────────────────────────────────────────────────────────
-    # Resend Email
-    RESEND_API_KEY = os.environ.get('RESEND_API_KEY', '')
+    RESEND_API_KEY    = os.environ.get('RESEND_API_KEY', '')
     RESEND_FROM_EMAIL = os.environ.get('RESEND_FROM_EMAIL', '')
-    
-    # PayMongo Billing
-    PAYMONGO_ENABLED = os.environ.get('PAYMONGO_ENABLED', 'false').lower() == 'true'
-    PAYMONGO_PUBLIC_KEY = os.environ.get('PAYMONGO_PUBLIC_KEY', '')
-    PAYMONGO_SECRET_KEY = os.environ.get('PAYMONGO_SECRET_KEY', '')
-    PAYMONGO_WEBHOOK_SECRET = os.environ.get('PAYMONGO_WEBHOOK_SECRET', '')
-    
-    # Web3Forms
-    WEB3FORMS_ACCESS_KEY = os.environ.get('WEB3FORMS_ACCESS_KEY', '')
-    
-    # Sentry Error Tracking
-    SENTRY_DSN = os.environ.get('SENTRY_DSN', '')
-    
-    # BetterStack Heartbeat
+
+    PAYMONGO_ENABLED         = os.environ.get('PAYMONGO_ENABLED', 'false').lower() == 'true'
+    PAYMONGO_PUBLIC_KEY      = os.environ.get('PAYMONGO_PUBLIC_KEY', '')
+    PAYMONGO_SECRET_KEY      = os.environ.get('PAYMONGO_SECRET_KEY', '')
+    PAYMONGO_WEBHOOK_SECRET  = os.environ.get('PAYMONGO_WEBHOOK_SECRET', '')
+
+    WEB3FORMS_ACCESS_KEY     = os.environ.get('WEB3FORMS_ACCESS_KEY', '')
+    SENTRY_DSN               = os.environ.get('SENTRY_DSN', '')
     BETTERSTACK_HEARTBEAT_URL = os.environ.get('BETTERSTACK_HEARTBEAT_URL', '')
-    HEARTBEAT_SECRET = os.environ.get('HEARTBEAT_SECRET', '')
-    
-    # ─────────────────────────────────────────────────────────────────
-    # BILLING & SUBSCRIPTIONS
-    # ─────────────────────────────────────────────────────────────────
-    APP_BASE_URL = os.environ.get('APP_BASE_URL', '').rstrip('/')
+    HEARTBEAT_SECRET         = os.environ.get('HEARTBEAT_SECRET', '')
+
+    APP_BASE_URL             = os.environ.get('APP_BASE_URL', '').rstrip('/')
     BILLING_GRACE_PERIOD_DAYS = int(os.environ.get('BILLING_GRACE_PERIOD_DAYS', '3'))
-    PAYMENT_TIMEOUT_SECONDS = int(os.environ.get('PAYMENT_TIMEOUT_SECONDS', '600'))
-    
+    PAYMENT_TIMEOUT_SECONDS  = int(os.environ.get('PAYMENT_TIMEOUT_SECONDS', '600'))
+
     # ─────────────────────────────────────────────────────────────────
-    # LOGGING & MONITORING
+    # LOGGING
     # ─────────────────────────────────────────────────────────────────
-    LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO')
+    LOG_LEVEL  = os.environ.get('LOG_LEVEL', 'INFO')
     LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    LOG_DIR = os.path.join(basedir, 'logs')
-    
-    # ─────────────────────────────────────────────────────────────────
-    # STATIC FILES
-    # ─────────────────────────────────────────────────────────────────
-    SEND_FILE_MAX_AGE_DEFAULT = 31536000  # 1 year for versioned assets
-    
+    LOG_DIR    = os.path.join(basedir, 'logs')
+
+    SEND_FILE_MAX_AGE_DEFAULT = 31536000
+
     @staticmethod
     def init_app(app):
         """Initialize upload directories."""
         upload_base = os.path.join(basedir, 'static', 'uploads')
-        os.makedirs(upload_base, exist_ok=True)
-        os.makedirs(os.path.join(upload_base, 'profiles'), exist_ok=True)
-        os.makedirs(os.path.join(upload_base, 'projects'), exist_ok=True)
-        os.makedirs(os.path.join(upload_base, 'avatars'), exist_ok=True)
-        os.makedirs(os.path.join(upload_base, 'billing'), exist_ok=True)
+        for sub in ('profiles', 'projects', 'avatars', 'billing'):
+            os.makedirs(os.path.join(upload_base, sub), exist_ok=True)
         os.makedirs(BaseConfig.LOG_DIR, exist_ok=True)
-        
-        app.config['UPLOAD_FOLDER'] = upload_base
+
+        app.config['UPLOAD_FOLDER']         = upload_base
         app.config['PROFILE_UPLOAD_FOLDER'] = os.path.join(upload_base, 'profiles')
         app.config['PROJECT_UPLOAD_FOLDER'] = os.path.join(upload_base, 'projects')
-        app.config['AVATAR_UPLOAD_FOLDER'] = os.path.join(upload_base, 'avatars')
+        app.config['AVATAR_UPLOAD_FOLDER']  = os.path.join(upload_base, 'avatars')
 
 
 class DevelopmentConfig(BaseConfig):
     """Development environment configuration."""
-    
-    DEBUG = True
+
+    DEBUG   = True
     TESTING = False
-    SESSION_COOKIE_SECURE = False
+
+    # Permissive for HTTP dev environment
+    SESSION_COOKIE_SECURE  = False
+    REMEMBER_COOKIE_SECURE = False
+
     SEND_FILE_MAX_AGE_DEFAULT = 0
-    
-    # Detailed logging
-    SQLALCHEMY_ECHO = True
+
+    SQLALCHEMY_ECHO          = True
     SQLALCHEMY_RECORD_QUERIES = True
     LOG_LEVEL = 'DEBUG'
-    
-    # Disable HTTPS requirement for development
+
     WTF_CSRF_SSL_STRICT = False
-    
-    # Loose rate limiting for development
-    RATELIMIT_ENABLED = False
-    
-    # Loose cache for development
-    CACHE_TYPE = 'SimpleCache'
-    
-    # Database configuration
+    RATELIMIT_ENABLED   = False
+    CACHE_TYPE          = 'SimpleCache'
+
     _core_db_file = Path(basedir) / 'storage' / 'portfolio_core_dev.db'
     _core_db_file.parent.mkdir(parents=True, exist_ok=True)
     _core_uri = _normalize_postgres_url(
         os.environ.get('DEV_CORE_DATABASE_URL', '')
     ) or f"sqlite:///{_core_db_file.resolve()}".replace('\\', '/')
-    
+
     _tenant_db_file = Path(basedir) / 'storage' / 'portfolio_tenant_dev.db'
     _tenant_db_file.parent.mkdir(parents=True, exist_ok=True)
     _tenant_uri = _normalize_postgres_url(
         os.environ.get('DEV_TENANT_DATABASE_URL', '')
     ) or f"sqlite:///{_tenant_db_file.resolve()}".replace('\\', '/')
-    
+
     SQLALCHEMY_DATABASE_URI = _core_uri
-    SQLALCHEMY_BINDS = {'tenant': _tenant_uri}
-    
-    SQLALCHEMY_ENGINE_OPTIONS = {
-        'pool_pre_ping': True,
-    }
+    SQLALCHEMY_BINDS        = {'tenant': _tenant_uri}
+
+    SQLALCHEMY_ENGINE_OPTIONS = {'pool_pre_ping': True}
 
 
 class ProductionConfig(BaseConfig):
     """Production environment configuration."""
-    
-    DEBUG = False
+
+    DEBUG   = False
     TESTING = False
-    
-    # Enforce HTTPS
-    SESSION_COOKIE_SECURE = True
+
+    # FIX [CRITICAL-1]: Only one assignment per variable, in the correct class.
+    SESSION_COOKIE_SECURE  = True
     REMEMBER_COOKIE_SECURE = True
-    WTF_CSRF_SSL_STRICT = True
-    
-    # Optimize logging for production
-    SQLALCHEMY_ECHO = False
+    WTF_CSRF_SSL_STRICT    = True
+
+    SQLALCHEMY_ECHO          = False
     SQLALCHEMY_RECORD_QUERIES = False
     LOG_LEVEL = 'WARNING'
-    
-    # Enable Redis caching
+
     CACHE_TYPE = 'RedisCache' if os.environ.get('REDIS_URL') else 'SimpleCache'
-    
-    # PostgreSQL for production
+
     SQLALCHEMY_ENGINE_OPTIONS = {
-        'poolclass': NullPool,
+        'poolclass':   NullPool,
         'pool_pre_ping': True,
         'connect_args': {
-        'sslmode': 'require',
-        'connect_timeout': 10,
-        'options': '-c statement_timeout=30000',
-        'application_name': 'portfolio_cms_prod',
+            'sslmode':          'require',
+            'connect_timeout':  10,
+            'options':          '-c statement_timeout=30000',
+            'application_name': 'portfolio_cms_prod',
         },
     }
-
-    # FIX (dead-validation-block): this block previously read
-    # `app.config.get(...)` against the throwaway local Flask instance
-    # created at module scope (line 33 of this file) for url_for context —
-    # NOT the real application built by app/__init__.py:create_app(). It
-    # always evaluated against `{}` and therefore never validated anything;
-    # it also silently set a stray `ProductionConfig.options` class
-    # attribute as a side effect. Real validation now lives in init_app()
-    # below, where `app` is the actual Flask instance being configured.
 
     @classmethod
     def _validate_engine_options(cls, app):
@@ -306,26 +275,33 @@ class ProductionConfig(BaseConfig):
             raise RuntimeError("SQLALCHEMY_ENGINE_OPTIONS must be dict, not string")
         if "poolclass" in options and isinstance(options["poolclass"], str):
             raise RuntimeError("poolclass must be SQLAlchemy class, not string")
-        
+
     @classmethod
     def init_app(cls, app):
         """Initialize production configuration with validation."""
         BaseConfig.init_app(app)
         cls._validate_engine_options(app)
-        
+
         # ─────────────────────────────────────────────────────────────
         # VALIDATE REQUIRED ENVIRONMENT VARIABLES
+        # FIX [CRITICAL-2]: PAYMONGO vars are only required when billing
+        # is enabled. A deployment with PAYMONGO_ENABLED=false no longer
+        # crashes at startup due to missing keys.
         # ─────────────────────────────────────────────────────────────
-        required_vars = [
+        always_required = [
             'SECRET_KEY',
             'FERNET_KEY',
             'CORE_DATABASE_URL',
             'TENANT_DATABASE_URL',
-            'PAYMONGO_SECRET_KEY',
-            'PAYMONGO_WEBHOOK_SECRET',
         ]
-        
-        missing = [var for var in required_vars if not os.environ.get(var)]
+        missing = [v for v in always_required if not os.environ.get(v)]
+
+        # Billing keys only required when PayMongo is explicitly enabled.
+        paymongo_enabled = os.environ.get('PAYMONGO_ENABLED', 'false').lower() == 'true'
+        if paymongo_enabled:
+            billing_required = ['PAYMONGO_SECRET_KEY', 'PAYMONGO_WEBHOOK_SECRET']
+            missing += [v for v in billing_required if not os.environ.get(v)]
+
         if missing:
             raise ValueError(
                 f"Production environment missing required variables: {', '.join(missing)}\n"
@@ -334,18 +310,19 @@ class ProductionConfig(BaseConfig):
 
         if not os.environ.get("REDIS_URL"):
             app.logger.warning(
-                "REDIS_URL not set — rate limiting and caching will use in-process fallbacks."
+                "REDIS_URL not set — rate limiting and caching will use "
+                "in-process fallbacks (not multi-worker safe)."
             )
-        
+
         # ─────────────────────────────────────────────────────────────
         # CONFIGURE DATABASES
         # ─────────────────────────────────────────────────────────────
-        core_url = _normalize_postgres_url(os.environ['CORE_DATABASE_URL'].strip())
+        core_url   = _normalize_postgres_url(os.environ['CORE_DATABASE_URL'].strip())
         tenant_url = _normalize_postgres_url(os.environ['TENANT_DATABASE_URL'].strip())
-        
+
         app.config['SQLALCHEMY_DATABASE_URI'] = core_url
-        app.config['SQLALCHEMY_BINDS'] = {'tenant': tenant_url}
-        
+        app.config['SQLALCHEMY_BINDS']        = {'tenant': tenant_url}
+
         # ─────────────────────────────────────────────────────────────
         # CONFIGURE SENTRY
         # ─────────────────────────────────────────────────────────────
@@ -361,49 +338,45 @@ class ProductionConfig(BaseConfig):
                 )
             except ImportError:
                 app.logger.warning('sentry-sdk not installed; skipping Sentry')
-        
+
         # ─────────────────────────────────────────────────────────────
         # PRODUCTION LOGGING
         # ─────────────────────────────────────────────────────────────
         handler = logging.StreamHandler()
         handler.setLevel(logging.WARNING)
-        formatter = logging.Formatter(BaseConfig.LOG_FORMAT)
-        handler.setFormatter(formatter)
+        handler.setFormatter(logging.Formatter(BaseConfig.LOG_FORMAT))
         app.logger.addHandler(handler)
 
 
 class TestingConfig(BaseConfig):
     """Testing environment configuration."""
-    
+
     TESTING = True
-    DEBUG = False
-    
-    # In-memory SQLite for tests
+    DEBUG   = False
+
     SQLALCHEMY_DATABASE_URI = 'sqlite:///:memory:'
-    SQLALCHEMY_BINDS = {'tenant': 'sqlite:///:memory:'}
+    SQLALCHEMY_BINDS        = {'tenant': 'sqlite:///:memory:'}
     SQLALCHEMY_ENGINE_OPTIONS = {}
-    
-    # Disable CSRF and rate limiting for tests
-    WTF_CSRF_ENABLED = False
-    RATELIMIT_ENABLED = False
-    SESSION_COOKIE_SECURE = False
-    
-    # Null cache for tests
+
+    WTF_CSRF_ENABLED       = False
+    RATELIMIT_ENABLED      = False
+    SESSION_COOKIE_SECURE  = False
+    REMEMBER_COOKIE_SECURE = False
+
     CACHE_TYPE = 'NullCache'
-    
-    # Use test secrets
-    SECRET_KEY = 'test-secret-key-not-for-production'
-    FERNET_KEY = b'test-fernet-key-not-for-production-_-1234567890ab'
+
+    SECRET_KEY  = 'test-secret-key-not-for-production'
+    FERNET_KEY  = b'test-fernet-key-not-for-production-_-1234567890ab'
 
 
-# ─────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # CONFIGURATION REGISTRY
-# ─────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 config = {
     'development': DevelopmentConfig,
-    'production': ProductionConfig,
-    'testing': TestingConfig,
-    'default': DevelopmentConfig,
+    'production':  ProductionConfig,
+    'testing':     TestingConfig,
+    'default':     DevelopmentConfig,
 }
 
 

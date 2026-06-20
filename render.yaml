@@ -1,22 +1,49 @@
-# render.yaml — Portfolio CMS v5.0 PRODUCTION-READY
-# ===================================================
-# FIXED:
-#   [HIGH] DATABASE_URL → CORE_DATABASE_URL + TENANT_DATABASE_URL (dual-db)
-#   [HIGH] Added MAILERSEND_API_KEY, MAILERSEND_FROM_EMAIL, MAILERSEND_FROM_NAME
-#   [HIGH] Added ENABLE_SCHEDULER=true for APScheduler single-worker safety
-#   [HIGH] Removed RESEND_* (replaced by MailerSend in v5.0)
-#   [MED]  Uncommented cron job for renewal check (optional — APScheduler covers it)
-#   [MED]  Added CORE_DATABASE_URL / TENANT_DATABASE_URL as explicit env vars
+# render.yaml — Portfolio CMS v5.3 PRODUCTION-READY (PATCHED)
+# ═══════════════════════════════════════════════════════════════
+# FIXES vs. v5.0 render.yaml:
+#
+#   [CRITICAL] preDeployCommand now runs `flask create-superadmin`
+#              so a superadmin user exists BEFORE the app starts.
+#              Without this, all production logins fail with
+#              "Invalid credentials" on fresh deployments.
+#
+#   [HIGH]     SUPERADMIN_USERNAME + SUPERADMIN_EMAIL added as
+#              explicit env vars (set in Render dashboard).
+#              SUPERADMIN_PASSWORD should be set, then removed after
+#              first login and password rotation.
+#
+#   [HIGH]     PAYMONGO_ENABLED=false explicitly set. The patched
+#              config.py no longer requires PAYMONGO_SECRET_KEY /
+#              PAYMONGO_WEBHOOK_SECRET when billing is disabled.
+#
+#   [MED]      Ordered preDeployCommand steps correctly:
+#              1. db upgrade (core schema)
+#              2. ensure-tenant-schema (tenant DB tables)
+#              3. ensure-default-tenant (tenant + profile rows)
+#              4. create-superadmin (auth user — THE CRITICAL STEP)
 
 services:
   - type: web
     name: portfolio-cms
     runtime: python
     buildCommand: pip install -r requirements.txt
+
+    # ── Deployment sequence — ORDER MATTERS ─────────────────────────
+    # Step 1: Apply all pending core DB migrations
+    # Step 2: Create tenant-bound tables on TENANT_DATABASE_URL
+    # Step 3: Ensure 'default' Tenant row + Profile exist
+    # Step 4: Create superadmin user (CRITICAL — was missing before)
+    #
+    # All commands are idempotent — safe to run on every deploy.
+    # If SUPERADMIN_PASSWORD is set as an env var, it is used.
+    # If absent, a secure password is auto-generated and printed to
+    # the Render deploy log — capture it before the log scrolls away.
     preDeployCommand: >
       flask db upgrade &&
       flask ensure-tenant-schema &&
-      flask ensure-default-tenant
+      flask ensure-default-tenant &&
+      flask create-superadmin
+
     startCommand: >
       gunicorn
       --bind 0.0.0.0:$PORT
@@ -28,6 +55,7 @@ services:
       --access-logfile -
       --error-logfile -
       wsgi:app
+
     plan: starter
     autoDeploy: true
     healthCheckPath: /health
@@ -42,38 +70,37 @@ services:
       - key: TOTP_VALID_WINDOW
         value: "1"
 
-      # ── Redis (required for multi-worker rate limiting) ──────────────────
+      # ── Redis ────────────────────────────────────────────────────
       - key: REDIS_URL
         fromService:
           name: portfolio-redis
           type: redis
           property: connectionString
 
-      # ── Core secrets — set in Render dashboard ────────────────────────────
+      # ── Core secrets ─────────────────────────────────────────────
       - key: SECRET_KEY
         generateValue: true
-      # Generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
       - key: FERNET_KEY
         sync: false
 
-      # ── DUAL DATABASE (REQUIRED) ──────────────────────────────────────────
-      # FIXED: v4.x used DATABASE_URL (single DB). v5.0 uses dual-db architecture.
-      # Create two PostgreSQL databases in Render, then set these:
+      # ── Dual Database ────────────────────────────────────────────
       - key: CORE_DATABASE_URL
         sync: false
       - key: TENANT_DATABASE_URL
         sync: false
 
-      # ── Supabase Storage (optional) ───────────────────────────────────────
-      - key: SUPABASE_URL
-        sync: false
-      - key: SUPABASE_SERVICE_KEY
-        sync: false
-      - key: SUPABASE_BUCKET
-        sync: false
+      # ── Superadmin bootstrap ─────────────────────────────────────
+      # Set these in the Render dashboard.
+      # After first login, change the password via the UI,
+      # then REMOVE SUPERADMIN_PASSWORD from env vars.
+      - key: SUPERADMIN_USERNAME
+        value: superadmin
+      - key: SUPERADMIN_EMAIL
+        sync: false         # set your real admin email in Render dashboard
+      - key: SUPERADMIN_PASSWORD
+        sync: false         # set a strong password, remove after first login
 
-      # ── Email — MailerSend (PRIMARY, v5.0) ───────────────────────────────
-      # FIXED: Replaced RESEND_API_KEY / RESEND_FROM_EMAIL with MailerSend
+      # ── Email — MailerSend ───────────────────────────────────────
       - key: MAILERSEND_API_KEY
         sync: false
       - key: MAILERSEND_FROM_EMAIL
@@ -81,42 +108,45 @@ services:
       - key: MAILERSEND_FROM_NAME
         value: "Portfolio CMS"
 
-      # ── App base URL for PayMongo redirects ──────────────────────────────
+      # ── Supabase (optional) ──────────────────────────────────────
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: SUPABASE_BUCKET
+        sync: false
+
+      # ── App URL ──────────────────────────────────────────────────
       - key: APP_BASE_URL
         sync: false
 
-      # ── Billing config ────────────────────────────────────────────────────
+      # ── Billing ──────────────────────────────────────────────────
       - key: BILLING_GRACE_PERIOD_DAYS
         value: "3"
 
-      # ── Contact / forms ────────────────────────────────────────────────────
-      - key: WEB3FORMS_ACCESS_KEY
-        sync: false
-      - key: ADMIN_EMAIL
-        sync: false
-
-      # ── Superadmin ────────────────────────────────────────────────────────
-      - key: SUPERADMIN_PASSWORD
-        sync: false
-
-      # ── PayMongo Billing ──────────────────────────────────────────────────
+      # FIX: PAYMONGO_ENABLED=false means PAYMONGO_SECRET_KEY and
+      # PAYMONGO_WEBHOOK_SECRET are NOT required at startup.
+      # Change to "true" and set the keys below when enabling billing.
+      - key: PAYMONGO_ENABLED
+        value: "false"
       - key: PAYMONGO_PUBLIC_KEY
         sync: false
       - key: PAYMONGO_SECRET_KEY
         sync: false
       - key: PAYMONGO_WEBHOOK_SECRET
         sync: false
-      - key: PAYMONGO_ENABLED
-        value: "false"
 
-      # ── APScheduler — single-worker safety ───────────────────────────────
-      # FIXED: With --workers 1, APScheduler fires once per interval.
-      # If you scale to multiple workers, remove ENABLE_SCHEDULER=true and
-      # use the cron job service below instead.
+      # ── Forms ────────────────────────────────────────────────────
+      - key: WEB3FORMS_ACCESS_KEY
+        sync: false
+      - key: ADMIN_EMAIL
+        sync: false
+
+      # ── Scheduler ───────────────────────────────────────────────
       - key: ENABLE_SCHEDULER
         value: "true"
 
-      # ── Monitoring ────────────────────────────────────────────────────────
+      # ── Monitoring ───────────────────────────────────────────────
       - key: BETTERSTACK_HEARTBEAT_URL
         sync: false
       - key: SENTRY_DSN
@@ -126,33 +156,8 @@ services:
       - key: SELF_PING_INTERVAL
         value: "60"
 
-  # ── Redis for rate limiting ──────────────────────────────────────────────────
+  # ── Redis ────────────────────────────────────────────────────────────────
   - type: redis
     name: portfolio-redis
     plan: free
     maxmemoryPolicy: allkeys-lru
-
-  # ── Cron job for subscription renewal ────────────────────────────────────────
-  # Alternative to APScheduler when running multiple Gunicorn workers.
-  # Uncomment this block AND set ENABLE_SCHEDULER=false on the web service
-  # if you scale beyond --workers 1.
-  #
-  # - type: cron
-  #   name: portfolio-renewal-check
-  #   runtime: python
-  #   schedule: "0 2 * * *"   # 02:00 AM UTC daily
-  #   buildCommand: pip install -r requirements.txt
-  #   startCommand: flask run-renewal-check
-  #   envVars:
-  #     - key: FLASK_APP
-  #       value: wsgi.py
-  #     - key: FLASK_ENV
-  #       value: production
-  #     - key: CORE_DATABASE_URL
-  #       sync: false
-  #     - key: TENANT_DATABASE_URL
-  #       sync: false
-  #     - key: SECRET_KEY
-  #       sync: false
-  #     - key: FERNET_KEY
-  #       sync: false
