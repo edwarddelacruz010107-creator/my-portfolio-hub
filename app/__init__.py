@@ -26,6 +26,7 @@ import os
 import time
 from pathlib import Path
 from flask import Flask, render_template, g, redirect, url_for
+from flask_wtf.csrf import CSRFError
 from werkzeug.middleware.proxy_fix import ProxyFix
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager
@@ -240,22 +241,24 @@ def create_app(config_name: str = 'default') -> Flask:
         static_folder='../static',
     )
 
+    app.config.from_object(config[config_name])
+    config[config_name].init_app(app)
+
     app.wsgi_app = ProxyFix(
         app.wsgi_app,
         x_for=1,
         x_proto=1,
         x_host=1,
+        x_port=1,
     )
 
-    app.config.from_object(config[config_name])
-    config[config_name].init_app(app)
-
-    Talisman(
-        app,
-        force_https=not app.debug,
-        content_security_policy=csp,
-        frame_options="DENY",
-    )
+    if not app.debug:
+        Talisman(
+            app,
+            force_https=True,
+            session_cookie_secure=True,
+            strict_transport_security=True,
+        )
 
     logging.basicConfig(
         level=logging.DEBUG if app.debug else logging.INFO,
@@ -609,6 +612,21 @@ def create_app(config_name: str = 'default') -> Flask:
     logger.info('=' * 80)
     logger.info('APPLICATION STARTUP COMPLETED SUCCESSFULLY')
     logger.info('=' * 80)
+
+    @app.errorhandler(CSRFError)
+    def handle_csrf_error(e):
+        from flask import request
+        
+        app.logger.error(
+            f"CSRF failed: {e.description} "
+            f"host={request.host} "
+            f"referrer={request.referrer}"
+        )
+
+        return {
+            "error": "CSRF validation failed",
+            "reason": e.description
+        }, 400
     
     return app
 

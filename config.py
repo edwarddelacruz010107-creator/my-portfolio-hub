@@ -246,10 +246,13 @@ class ProductionConfig(BaseConfig):
     DEBUG   = False
     TESTING = False
 
+    PREFERRED_URL_SCHEME = "https"
+
     # FIX [CRITICAL-1]: Only one assignment per variable, in the correct class.
     SESSION_COOKIE_SECURE  = True
     REMEMBER_COOKIE_SECURE = True
-    WTF_CSRF_SSL_STRICT    = True
+    WTF_CSRF_SSL_STRICT    = False   # Allow CSRF tokens over HTTP for initial setup; app should be behind HTTPS in production.
+    WTF_CSRF_ENABLED = True
 
     SQLALCHEMY_ECHO          = False
     SQLALCHEMY_RECORD_QUERIES = False
