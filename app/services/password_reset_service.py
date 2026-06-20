@@ -16,6 +16,7 @@ Session security on password change:
   • session_token rotated → existing sessions invalidated
   • require_password_reset cleared
 """
+import hashlib
 import logging
 import secrets
 from datetime import datetime, timezone
@@ -32,6 +33,27 @@ from app.security import log_security_event
 logger = logging.getLogger(__name__)
 
 _MAX_OTP_TTL = 10  # minutes
+
+
+def _hash_token(token: str) -> str:
+    """
+    Hash a raw reset token for DB lookup.
+
+    CRITICAL: User.password_reset_token stores sha256(raw_token) — see
+    User.generate_reset_token() in app/models/core.py. Every complete_*_reset()
+    below MUST hash the incoming raw token before querying the column, or the
+    lookup will silently return zero rows on every single attempt (v5.4 bug —
+    this was the cause of "Reset link is invalid or has expired" firing on
+    100% of submissions, independent of timing/expiry/tenant).
+    """
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _get_reset_token_ttl_minutes() -> int:
+    try:
+        return current_app.config.get('PASSWORD_RESET_EXPIRATION_MINUTES', 15)
+    except RuntimeError:
+        return 15
 
 
 def _get_ip() -> str:
@@ -108,7 +130,7 @@ def verify_superadmin_otp(submitted_email: str, raw_otp: str) -> tuple[bool, str
         log_security_event('sa_otp_failed', user, f'OTP verify failed: {msg}', 'warning')
         return False, msg, None
 
-    token = user.generate_reset_token(expires_in_minutes=15)
+    token = user.generate_reset_token(expires_in_minutes=_get_reset_token_ttl_minutes())
     db.session.commit()
     log_security_event('sa_otp_verified', user, 'OTP verified', 'info')
     return True, 'OTP verified. Set your new password.', token
@@ -117,9 +139,10 @@ def verify_superadmin_otp(submitted_email: str, raw_otp: str) -> tuple[bool, str
 def complete_superadmin_reset(token: str, new_password: str) -> tuple[bool, str]:
     """Apply password, invalidate all sessions."""
     user = User.query.filter_by(is_superadmin=True).filter(
-        User.password_reset_token == token
+        User.password_reset_token == _hash_token(token)
     ).first()
     if not user or not user.verify_reset_token(token):
+        logger.warning('Superadmin reset: token lookup failed (not found or expired)')
         return False, 'Reset link is invalid or has expired.'
 
     _apply_password_change(user, new_password)
@@ -166,16 +189,17 @@ def verify_admin_otp(submitted_email: str, raw_otp: str) -> tuple[bool, str, str
     if not ok:
         return False, msg, None
 
-    token = user.generate_reset_token(expires_in_minutes=15)
+    token = user.generate_reset_token(expires_in_minutes=_get_reset_token_ttl_minutes())
     db.session.commit()
     return True, 'OTP verified. Set your new password.', token
 
 
 def complete_admin_reset(token: str, new_password: str) -> tuple[bool, str]:
     user = User.query.filter_by(is_superadmin=False).filter(
-        User.password_reset_token == token
+        User.password_reset_token == _hash_token(token)
     ).first()
     if not user or not user.verify_reset_token(token):
+        logger.warning('Admin reset: token lookup failed (not found or expired)')
         return False, 'Reset link is invalid or has expired.'
     _apply_password_change(user, new_password)
     log_security_event('admin_pw_reset_complete', user, f'Password reset from {_get_ip()}', 'info')
@@ -270,7 +294,7 @@ def verify_tenant_otp(submitted_email: str, raw_otp: str, tenant_slug: str) -> t
     if not ok:
         return False, msg, None
 
-    token = user.generate_reset_token(expires_in_minutes=15)
+    token = user.generate_reset_token(expires_in_minutes=_get_reset_token_ttl_minutes())
     db.session.commit()
     return True, 'OTP verified. Set your new password.', token
 
@@ -280,9 +304,21 @@ def complete_tenant_reset(token: str, new_password: str, tenant_id: int) -> tupl
     Apply password change — enforces tenant isolation via tenant_id.
     """
     user = User.query.filter_by(is_superadmin=False, tenant_id=tenant_id).filter(
-        User.password_reset_token == token
+        User.password_reset_token == _hash_token(token)
     ).first()
-    if not user or not user.verify_reset_token(token):
+    if not user:
+        logger.warning(
+            'Tenant reset failed: no user row matches token hash for tenant_id=%s '
+            '(token not found / already used / wrong tenant)', tenant_id,
+        )
+        return False, 'Reset link is invalid or has expired.'
+    if not user.verify_reset_token(token):
+        logger.warning(
+            'Tenant reset failed: user=%s tenant_id=%s expires_at=%s now=%s — '
+            'expired or hash mismatch',
+            user.id, tenant_id, user.password_reset_expires,
+            datetime.now(timezone.utc),
+        )
         return False, 'Reset link is invalid or has expired.'
     _apply_password_change(user, new_password)
     log_security_event('tenant_pw_reset_complete', user, f'Password reset from {_get_ip()}', 'info')
