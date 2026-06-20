@@ -37,6 +37,7 @@ v3.4.2 (this version) — Default Tenant Hardening
 v3.1 (previous) — Account lockout, password policy, audit logging, 2FA.
 v3.0 — Initial multi-tenant auth.
 """
+import hashlib
 import logging
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse, urljoin
@@ -655,7 +656,14 @@ def reset_password(token: str):
         return redirect(url_for('admin.dashboard'))
 
     # v3.7 VULN-06 FIX: validate token AND confirm tenant matches
-    user = User.query.filter_by(password_reset_token=token).first()
+    # v5.4 FIX: User.generate_reset_token() stores sha256(raw_token) in
+    # password_reset_token (see app/models/core.py). The raw token from the
+    # URL must be hashed before the lookup, or this query always returns
+    # zero rows — every reset link would report "invalid or expired"
+    # regardless of validity. Same bug class documented in
+    # password_reset_service.py's _hash_token(); this flow was missed.
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    user = User.query.filter_by(password_reset_token=token_hash).first()
     if not user or not user.verify_reset_token(token):
         flash('This reset link is invalid or has expired.', 'danger')
         return redirect(url_for('auth.forgot_password'))

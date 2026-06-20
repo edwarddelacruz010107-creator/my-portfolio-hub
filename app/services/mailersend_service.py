@@ -17,7 +17,10 @@ Sender identity priority:
   2. MAILERSEND_FROM_NAME / MAILERSEND_FROM_EMAIL environment variables
   3. Hard-coded safe defaults
 
-SMTP (Flask-Mail) remains as final fallback for all email types.
+NOTE: Flask-Mail/SMTP was fully removed in v5.0. MailerSend is the sole
+transactional email provider — there is no fallback provider. If a send
+fails, it fails (see _smtp_fallback() below, kept only as a clearly-logged
+no-op for callers that still reference it).
 """
 from __future__ import annotations
 
@@ -78,8 +81,12 @@ def send_email_with_retry(
     """
     Send an email via MailerSend with automatic retry on transient failures.
 
-    Attempts MailerSend first with up to `max_retries` attempts (exponential
-    backoff), then falls back to SMTP on permanent failure.
+    Attempts MailerSend with up to `max_retries` attempts (exponential
+    backoff). There is no SMTP fallback — Flask-Mail/SMTP was fully removed
+    in v5.0, so a permanent MailerSend failure means the email is not sent
+    (it is logged; for contact-form submissions the inquiry itself is always
+    persisted to the DB first, so the message is never lost, only the email
+    notification).
 
     Args:
         to_email:     Recipient address.
@@ -88,10 +95,10 @@ def send_email_with_retry(
         text_content: Plain-text body. Auto-stripped from HTML if not provided.
         to_name:      Optional display name for recipient.
         reply_to:     Optional reply-to address.
-        max_retries:  Number of MailerSend attempts before SMTP fallback.
+        max_retries:  Number of MailerSend attempts.
 
     Returns:
-        True if delivered (MailerSend or SMTP fallback).
+        True if delivered via MailerSend, False otherwise.
     """
     import time
     import re
@@ -302,7 +309,18 @@ def send_email(
 
 def _smtp_fallback(to: str, subject: str, body: str) -> bool:
     """
-    Send via Flask-Mail when MailerSend fails or is unconfigured.
+    No-op placeholder. Flask-Mail/SMTP was fully removed in v5.0 — MailerSend
+    is the sole transactional email provider (see email_service.py docstring).
+
+    Previously this function attempted `from flask_mail import Message` and
+    `from app import mail`, neither of which exist anymore (flask-mail is not
+    in requirements.txt and is not installed). Every call silently raised
+    ModuleNotFoundError, was swallowed by the bare except below, and returned
+    False — meaning "SMTP fallback" never actually delivered anything. It only
+    ever produced a misleading log line claiming a fallback path existed.
+
+    This function now fails fast and says so clearly, so a MailerSend outage
+    is visible in logs immediately instead of being masked by a fake retry.
 
     Args:
         to:      Recipient address.
@@ -310,22 +328,15 @@ def _smtp_fallback(to: str, subject: str, body: str) -> bool:
         body:    Plain-text body.
 
     Returns:
-        True on success, False on failure.
+        Always False — there is no fallback provider configured.
     """
-    try:
-        from flask_mail import Message
-        from app import mail
-        sender = (
-            current_app.config.get('MAIL_DEFAULT_SENDER')
-            or current_app.config.get('MAIL_USERNAME', '')
-        )
-        msg = Message(subject=subject, recipients=[to], body=body, sender=sender)
-        mail.send(msg)
-        logger.info('SMTP fallback: sent <%s> to %s', subject[:60], to)
-        return True
-    except Exception as exc:
-        logger.error('SMTP fallback failed for %s: %s', to, exc)
-        return False
+    logger.error(
+        'No SMTP fallback available (Flask-Mail removed in v5.0); '
+        'email to %s with subject "%s" was NOT delivered. '
+        'Check MailerSend configuration/status.',
+        to, subject[:80],
+    )
+    return False
 
 
 # ─────────────────────────────────────────────────────────────────────────────

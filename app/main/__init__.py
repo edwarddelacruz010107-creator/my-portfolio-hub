@@ -229,36 +229,19 @@ def contact():
     log_activity('create', 'inquiry', name, f'Contact from {email}')
 
     try:
-        import os as _os
-        from app.services.mailersend_service import send_email_with_retry as _send_email_with_retry
+        from app.services.mailersend_service import send_system_notification
 
-        api_key = _os.environ.get('MAILERSEND_API_KEY', '').strip()
-        from_email = _os.environ.get('MAILERSEND_FROM_EMAIL', '').strip().lower()
-        from_name = _os.environ.get('MAILERSEND_FROM_NAME', '').strip()
         dest = (current_app.config.get('ADMIN_EMAIL') or '').strip()
-
-        if api_key and dest:
-            ok = _send_email_with_retry(
-                to_email=dest,
-                subject=f'New inquiry from {name}: {subject or "Contact Form"}',
-                html_content=(
-                    '<div>'
-                    f'<p><strong>Name:</strong> {name}</p>'
-                    f'<p><strong>Email:</strong> {email}</p>'
-                    f'<p><strong>Subject:</strong> {subject}</p>'
-                    f'<pre style="white-space:pre-wrap;">{message}</pre>'
-                    '</div>'
-                ),
-                text_content=(
-                    f'Name: {name}\n'
-                    f'Email: {email}\n'
+        if dest:
+            ok = send_system_notification(
+                dest,
+                f'New inquiry from {name}: {subject or "Contact Form"}',
+                (
+                    f'Name:    {name}\n'
+                    f'Email:   {email}\n'
                     f'Subject: {subject}\n\n'
                     f'{message}\n'
                 ),
-                reply_to=email,
-                api_key_override=api_key,
-                from_email_override=from_email,
-                from_name_override=from_name,
             )
             inquiry.delivery_status = 'delivered' if ok else 'failed'
             if not ok:

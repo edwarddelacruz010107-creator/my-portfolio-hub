@@ -877,18 +877,8 @@ def _render_default_portfolio():
         return render_template('errors/setup_needed.html'), 503
 
     all_projects = Project.published_for_tenant(TENANT).all()
-    featured_projects =  (
-        Project.published_for_tenant(TENANT)
-        .filter_by(is_featured=True)
-        .limit(6)
-        .all()
-    )
-    other_projects = (
-        Project.published_for_tenant(TENANT)
-        .filter_by(is_featured=False)
-        .limit(20)
-        .all()
-    )
+    featured_projects = [p for p in all_projects if p.is_featured]
+    other_projects = [p for p in all_projects if not p.is_featured]
     skills = (
         Skill.query
         .filter(
