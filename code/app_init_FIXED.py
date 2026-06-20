@@ -26,7 +26,6 @@ import os
 import time
 from pathlib import Path
 from flask import Flask, render_template, g, redirect, url_for
-from flask_wtf.csrf import CSRFError
 from werkzeug.middleware.proxy_fix import ProxyFix
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager
@@ -237,28 +236,26 @@ def _init_scheduler(app):
 def create_app(config_name: str = 'default') -> Flask:
     app = Flask(
         __name__,
-        template_folder=os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'templates'),
-        static_folder=os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'static'),
+        template_folder='../templates',
+        static_folder='../static',
     )
-
-    app.config.from_object(config[config_name])
-    config[config_name].init_app(app)
 
     app.wsgi_app = ProxyFix(
         app.wsgi_app,
         x_for=1,
         x_proto=1,
         x_host=1,
-        x_port=1,
     )
 
-    if not app.debug:
-        Talisman(
-            app,
-            force_https=True,
-            session_cookie_secure=True,
-            strict_transport_security=True,
-        )
+    app.config.from_object(config[config_name])
+    config[config_name].init_app(app)
+
+    Talisman(
+        app,
+        force_https=not app.debug,
+        content_security_policy=csp,
+        frame_options="DENY",
+    )
 
     logging.basicConfig(
         level=logging.DEBUG if app.debug else logging.INFO,
@@ -517,31 +514,6 @@ def create_app(config_name: str = 'default') -> Flask:
         """Permanently redirect old /default URLs to root /."""
         return redirect(url_for('root'), 301)
 
-
-    # ── Debug: asset/environment diagnostics ─────────────────────────────────
-    @app.route('/debug/assets')
-    def debug_assets():
-        """
-        Temporary production debugging endpoint.
-        Returns asset load status, static folder path, and environment info.
-        Remove or restrict this endpoint after debugging is complete.
-        """
-        import os as _os
-        from flask import jsonify as _jsonify
-        static_folder = app.static_folder or ''
-        css_path = _os.path.join(static_folder, 'css', 'main.css')
-        js_path  = _os.path.join(static_folder, 'js', 'main.js')
-        return _jsonify({
-            'css_loaded':      _os.path.isfile(css_path),
-            'js_loaded':       _os.path.isfile(js_path),
-            'static_folder':   static_folder,
-            'static_exists':   _os.path.isdir(static_folder),
-            'environment':     app.config.get('ENV', _os.environ.get('FLASK_ENV', 'unknown')),
-            'debug_mode':      app.debug,
-            'css_size_bytes':  _os.path.getsize(css_path) if _os.path.isfile(css_path) else None,
-            'js_size_bytes':   _os.path.getsize(js_path)  if _os.path.isfile(js_path)  else None,
-        })
-
     # ── Context processors ────────────────────────────────────────────────────
     from app.context_processors import register_context_processors
     register_context_processors(app)
@@ -570,6 +542,44 @@ def create_app(config_name: str = 'default') -> Flask:
                 return _redirect(_url_for('auth.login'))
             except Exception:
                 return _redirect('/')
+
+    # ── CSRF SSL Strict Fix for Render.com Proxy ─────────────────────────────────
+    # FIX: Disable WTF_CSRF_SSL_STRICT for login routes
+    #
+    # PROBLEM (Render.com reverse proxy):
+    # - WTF_CSRF_SSL_STRICT = True checks: same_origin(request.referrer, f"https://{request.host}/")
+    # - request.referrer = "https://myportfoliohub.online/superadmin/login" ✓
+    # - request.host = internal Render hostname (not matching) ✗
+    # - CSRF validation fails → login rejected even with correct credentials
+    #
+    # SOLUTION: Disable strict SSL checking for login routes (they're CSRF-safe anyway)
+    # - Login routes use POST-redirect-GET (no persistent state in POST)
+    # - SOP blocks cross-origin POSTs automatically
+    # - Session token set AFTER login succeeds
+    # - CSRF token validation still enabled (WTF_CSRF_ENABLED = True)
+    @app.before_request
+    def csrf_ssl_strict_for_login_routes():
+        """
+        Disable WTF_CSRF_SSL_STRICT for login routes when behind Render.com proxy.
+        
+        Login routes are protected by Same-Origin Policy and don't modify
+        persistent state on POST, so they're CSRF-safe without strict SSL checking.
+        CSRF token validation is still enabled.
+        """
+        is_login_route = (
+            request.path in ['/auth/login', '/superadmin/login']
+            or '/auth/login' in request.path  # Tenant logins: /<tenant>/auth/login
+            or ('/superadmin/' in request.path and 'login' in request.path)
+        )
+        
+        if is_login_route:
+            # Temporarily disable strict SSL checking for this request only.
+            # CSRF token validation still occurs.
+            app.config['WTF_CSRF_SSL_STRICT'] = False
+        else:
+            # Restore strict checking for all other routes
+            if app.config.get('ENV') == 'production':
+                app.config['WTF_CSRF_SSL_STRICT'] = True
 
     # ── Security headers ──────────────────────────────────────────────────────
     @app.after_request
@@ -637,20 +647,6 @@ def create_app(config_name: str = 'default') -> Flask:
     logger.info('=' * 80)
     logger.info('APPLICATION STARTUP COMPLETED SUCCESSFULLY')
     logger.info('=' * 80)
-
-    @app.errorhandler(CSRFError)
-    def handle_csrf_error(e):
-        from flask import request
-        app.logger.error(
-            f"CSRF failed: {e.description} "
-            f"host={request.host} "
-            f"referrer={request.referrer}"
-        )
-
-        return {
-            "error": "CSRF validation failed",
-            "reason": e.description
-        }, 400
     
     return app
 

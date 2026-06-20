@@ -742,12 +742,12 @@ def auth_forgot_password():
     if request.method == 'POST':
         from app.services.password_reset_service import initiate_tenant_reset
         email    = request.form.get('email', '').strip().lower()
-        username = request.form.get('username', '').strip() or None
-        if not email:
-            flash('Email address required.', 'danger')
+        username = request.form.get('username', '').strip()
+        if not email or not username:
+            flash('Username and email are both required.', 'danger')
             return render_template('tenant/forgot_password_request.html',
                                    tenant_slug=g.tenant_slug)
-        ok, msg = initiate_tenant_reset(email, username)
+        ok, msg = initiate_tenant_reset(email, username, g.tenant_slug)
         flash(msg, 'info' if ok else 'danger')
         if ok:
             session['_tenant_pw_reset_email']  = email
@@ -774,7 +774,7 @@ def auth_forgot_password_verify():
     if request.method == 'POST':
         from app.services.password_reset_service import verify_tenant_otp
         raw_otp = request.form.get('otp_code', '').strip()
-        ok, msg, token = verify_tenant_otp(email, raw_otp)
+        ok, msg, token = verify_tenant_otp(email, raw_otp, g.tenant_slug)
         flash(msg, 'success' if ok else 'danger')
         if ok:
             session['_tenant_pw_reset_token'] = token

@@ -186,42 +186,57 @@ def complete_admin_reset(token: str, new_password: str) -> tuple[bool, str]:
 # C. Tenant reset (validates email against Tenant.contact_email)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def initiate_tenant_reset(submitted_email: str, username: str | None = None) -> tuple[bool, str]:
+def initiate_tenant_reset(submitted_email: str, username: str | None,
+                           tenant_slug: str) -> tuple[bool, str]:
     """
     Initiate tenant OTP reset.
 
-    Validation: submitted_email must exactly match the User's email AND
-    the tenant's contact_email (both must be set and match).
-    If either fails → generic error; no OTP sent; no enumeration.
+    Validation (per spec — all REQUIRED, all must match the SAME user row):
+      1. username exists
+      2. email exists
+      3. username + email belong to the same User
+      4. that User belongs to the tenant identified by tenant_slug (URL)
+
+    NOTE (v5.4 fix): previous implementation gated on Tenant.contact_email,
+    a config field that is independent of the User record and frequently
+    drifts/unset — causing this function to dead-end before ever calling
+    create_otp_record()/send_otp_email(). Validation now targets the User
+    row directly, matching the documented flow and the working Test-Email
+    code path (same mailersend_service, just no longer short-circuited).
+
+    On any mismatch → single generic error; no OTP created; no email sent;
+    no indication of which field was wrong (anti-enumeration).
     """
     if not _recovery_enabled():
         return False, 'Password recovery is currently disabled.'
 
     generic_ok  = 'If a matching account is found, an OTP has been sent.'
-    generic_err = 'Invalid email or account.'
+    generic_err = 'Invalid username or email.'
 
-    email = submitted_email.strip().lower()
+    email = (submitted_email or '').strip().lower()
+    uname = (username or '').strip()
 
-    query = User.query.filter_by(email=email, is_superadmin=False)
-    if username:
-        query = query.filter_by(username=username.strip())
-    user = query.first()
+    if not email or not uname:
+        return False, generic_err
+
+    tenant = Tenant.query.filter_by(slug=tenant_slug).first()
+    if not tenant:
+        logger.warning('Tenant reset: unknown tenant_slug=%s', tenant_slug)
+        return False, generic_err
+
+    # Single query: username AND email must match the SAME row,
+    # AND that row must belong to the tenant resolved from the URL slug.
+    user = User.query.filter_by(
+        username=uname, email=email, is_superadmin=False,
+        tenant_id=tenant.id,
+    ).first()
 
     if not user:
-        return True, generic_ok  # Suppress enumeration
-
-    # CRITICAL: email must match Tenant.contact_email
-    tenant = Tenant.query.get(user.tenant_id)
-    if not tenant:
-        return True, generic_ok
-
-    tenant_contact = (tenant.contact_email or '').strip().lower()
-    if not tenant_contact or tenant_contact != email:
         logger.warning(
-            'Tenant reset blocked: submitted=%s contact=%s tenant=%s',
-            email, tenant_contact, tenant.slug,
+            'Tenant reset blocked: no match for username=%s email=%s tenant=%s',
+            uname, email, tenant_slug,
         )
-        return False, generic_err  # Mismatch — explicit generic error per spec
+        return False, generic_err  # Per spec: explicit generic error, no field disclosure
 
     ip, ua, ttl = _get_ip(), _get_ua(), _get_ttl_minutes()
     raw_otp = create_otp_record(
@@ -229,24 +244,27 @@ def initiate_tenant_reset(submitted_email: str, username: str | None = None) -> 
         tenant_id=user.tenant_id, ip_address=ip, user_agent=ua,
     )
     db.session.commit()
-    send_otp_email(
-        recipient_email=email, otp=raw_otp,
+    sent = send_otp_email(
+        recipient_email=user.email, otp=raw_otp,
         user_type='tenant', ip_address=ip, user_agent=ua, ttl_minutes=ttl,
     )
+    if not sent:
+        logger.error('Tenant OTP email delivery failed for user %s (tenant=%s)',
+                      user.id, tenant_slug)
     log_security_event('tenant_pw_reset_initiated', user, f'OTP sent from {ip}', 'info')
     return True, generic_ok
 
 
-def verify_tenant_otp(submitted_email: str, raw_otp: str) -> tuple[bool, str, str | None]:
+def verify_tenant_otp(submitted_email: str, raw_otp: str, tenant_slug: str) -> tuple[bool, str, str | None]:
     email = submitted_email.strip().lower()
-    user  = User.query.filter_by(email=email, is_superadmin=False).first()
-    if not user:
+    tenant = Tenant.query.filter_by(slug=tenant_slug).first()
+    if not tenant:
         return False, 'Invalid OTP or account.', None
 
-    # Double-check tenant isolation
-    tenant = Tenant.query.get(user.tenant_id)
-    if not tenant or (tenant.contact_email or '').strip().lower() != email:
-        return False, 'Invalid email or account.', None
+    user = User.query.filter_by(email=email, is_superadmin=False,
+                                 tenant_id=tenant.id).first()
+    if not user:
+        return False, 'Invalid OTP or account.', None
 
     ok, msg = verify_otp('tenant', user.id, raw_otp, tenant_id=user.tenant_id)
     if not ok:
