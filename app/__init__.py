@@ -1218,6 +1218,25 @@ def register_cli_commands(app):
         click.echo('   → Admin panel at: /admin/')
         click.echo('   → Login at: /auth/login')
 
+    @app.cli.command('unlock-superadmin')
+    def cli_unlock_superadmin():
+        """Clear AccountLockout's failed-attempt counter on the superadmin account.
+
+        Operational helper — does NOT touch the password, schema, or model.
+        Run this (via `render shell` or the Render dashboard's one-off job
+        runner) to skip the 15-minute lockout cooldown after testing logins
+        with a freshly-rotated password.
+        """
+        from app.models import User
+        user = User.query.filter_by(username='superadmin').first()
+        if not user:
+            click.echo('✗  No superadmin user found.')
+            return
+        user.failed_login_attempts = 0
+        user.last_failed_login_at = None
+        db.session.commit()
+        click.echo('✔  Superadmin lockout cleared. You can log in immediately.')
+
     @app.cli.command('create-superadmin')
     def cli_create_superadmin():
         """Create the superadmin account, or ensure roles/tenant are correct if it
