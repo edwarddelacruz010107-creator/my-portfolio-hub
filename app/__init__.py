@@ -237,12 +237,35 @@ def _init_scheduler(app):
 def create_app(config_name: str = 'default') -> Flask:
     app = Flask(
         __name__,
-        template_folder='../templates',
-        static_folder='../static',
+        template_folder=os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'templates'),
+        static_folder=os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'static'),
     )
 
     app.config.from_object(config[config_name])
     config[config_name].init_app(app)
+
+    # FIX [CACHE-1] — Root cause of "production serves an old CSS/JS file
+    # after a deploy": ProductionConfig.SEND_FILE_MAX_AGE_DEFAULT = 31536000
+    # (1 year) and the project has zero cache-busting (no hashed filenames,
+    # no ?v= query param). DevelopmentConfig sets this to 0, so dev always
+    # re-fetches the file — which is why a stale-cache regression is only
+    # ever visible in production, and only after the first deploy following
+    # an edit (browsers that already cached the old file keep it for a
+    # full year). `asset_url()` keeps the 1-year cache (good — fewer
+    # requests) but invalidates it automatically on every file change by
+    # appending the file's mtime as a query string, e.g. main.css?v=1750... .
+    # No template-visible behavior changes besides the querystring suffix.
+    def asset_url(filename: str) -> str:
+        from flask import url_for as _url_for
+        static_folder = app.static_folder or ''
+        abs_path = os.path.join(static_folder, filename)
+        try:
+            v = int(os.path.getmtime(abs_path))
+        except OSError:
+            v = 0
+        return f"{_url_for('static', filename=filename)}?v={v}"
+
+    app.jinja_env.globals['asset_url'] = asset_url
 
     app.wsgi_app = ProxyFix(
         app.wsgi_app,
@@ -253,11 +276,63 @@ def create_app(config_name: str = 'default') -> Flask:
     )
 
     if not app.debug:
+        # FIX [CSP-1] — Root cause of "production UI differs from dev":
+        # Talisman with no `content_security_policy` kwarg falls back to its
+        # library default of `default-src 'self'`. That default silently
+        # blocks every third-party origin this app's templates depend on:
+        #   - fonts.googleapis.com / fonts.gstatic.com  → Google Fonts CSS
+        #     + woff2 files fail to load → all text falls back to the
+        #     browser's system font stack (visually "different typography").
+        #   - code.iconify.design / unpkg.com            → the iconify-icon
+        #     web-component script is blocked outright, so <iconify-icon>
+        #     tags never upgrade into rendered SVGs.
+        #   - api.iconify.design (connect-src)            → even if the
+        #     script above loaded, this is the runtime endpoint the
+        #     component fetches each icon's SVG data from (the "lucide:*"
+        #     icon set is not bundled locally) — blocked under the
+        #     default-src fallback used for connect-src.
+        # In development app.debug is True, so this whole block is skipped
+        # and there is NO CSP at all — which is why "Development looks
+        # perfect" while production silently drops icons + custom fonts.
+        # This explicit policy allow-lists exactly what the templates use
+        # today; nothing broader.
+        csp = {
+            "default-src": "'self'",
+            "base-uri": "'self'",
+            "object-src": "'none'",
+            "frame-ancestors": "'none'",
+            "script-src": [
+                "'self'",
+                "https://code.iconify.design",
+                "https://unpkg.com",
+            ],
+            "style-src": [
+                "'self'",
+                "'unsafe-inline'",      # required: inline <style> blocks / style attrs in templates
+                "https://fonts.googleapis.com",
+            ],
+            "font-src": [
+                "'self'",
+                "data:",
+                "https://fonts.gstatic.com",
+            ],
+            "connect-src": [
+                "'self'",
+                "https://api.iconify.design",
+            ],
+            "img-src": [
+                "'self'",
+                "data:",
+                "blob:",
+                "https://*.supabase.co",
+            ],
+        }
         Talisman(
             app,
             force_https=True,
             session_cookie_secure=True,
             strict_transport_security=True,
+            content_security_policy=csp,
         )
 
     logging.basicConfig(
@@ -516,6 +591,31 @@ def create_app(config_name: str = 'default') -> Flask:
     def default_redirect():
         """Permanently redirect old /default URLs to root /."""
         return redirect(url_for('root'), 301)
+
+
+    # ── Debug: asset/environment diagnostics ─────────────────────────────────
+    @app.route('/debug/assets')
+    def debug_assets():
+        """
+        Temporary production debugging endpoint.
+        Returns asset load status, static folder path, and environment info.
+        Remove or restrict this endpoint after debugging is complete.
+        """
+        import os as _os
+        from flask import jsonify as _jsonify
+        static_folder = app.static_folder or ''
+        css_path = _os.path.join(static_folder, 'css', 'main.css')
+        js_path  = _os.path.join(static_folder, 'js', 'main.js')
+        return _jsonify({
+            'css_loaded':      _os.path.isfile(css_path),
+            'js_loaded':       _os.path.isfile(js_path),
+            'static_folder':   static_folder,
+            'static_exists':   _os.path.isdir(static_folder),
+            'environment':     app.config.get('ENV', _os.environ.get('FLASK_ENV', 'unknown')),
+            'debug_mode':      app.debug,
+            'css_size_bytes':  _os.path.getsize(css_path) if _os.path.isfile(css_path) else None,
+            'js_size_bytes':   _os.path.getsize(js_path)  if _os.path.isfile(js_path)  else None,
+        })
 
     # ── Context processors ────────────────────────────────────────────────────
     from app.context_processors import register_context_processors
