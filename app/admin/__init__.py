@@ -1832,7 +1832,9 @@ def forgot_password_verify():
             _session['_admin_pw_reset_token'] = token
             return redirect(url_for('admin.forgot_password_reset'))
 
-    return render_template('admin/forgot_password_verify.html', email=email)
+    from app.services.password_reset_service import _get_ttl_minutes
+    return render_template('admin/forgot_password_verify.html', email=email,
+                           otp_ttl_minutes=_get_ttl_minutes())
 
 
 @admin.route('/forgot-password/reset', methods=['GET', 'POST'])

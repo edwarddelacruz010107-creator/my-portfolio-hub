@@ -2065,7 +2065,9 @@ def forgot_password_verify():
             _session['_pw_reset_token'] = token
             return redirect(url_for('superadmin.forgot_password_reset'))
 
-    return render_template('superadmin/forgot_password.html')  # reuse existing OTP entry template
+    from app.services.password_reset_service import _get_ttl_minutes
+    return render_template('superadmin/forgot_password.html',
+                           otp_ttl_minutes=_get_ttl_minutes())  # reuse existing OTP entry template
 
 
 @superadmin.route('/forgot-password/reset', methods=['GET', 'POST'])

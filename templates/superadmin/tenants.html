@@ -95,7 +95,6 @@
         <th>Tenant</th>
         <th>Slug</th>
         <th>Owner Email</th>
-        <th>Contact Email</th>
         <th>Plan</th>
         <th>Status</th>
         <th>Projects</th>
@@ -139,18 +138,6 @@
             <span class="td-email-text">{{ t.email }}</span>
           {% else %}
             <span class="text-dim">—</span>
-          {% endif %}
-        </td>
-
-        <!-- Contact Email (v3.8) -->
-        <td class="td-email">
-          {% if t.contact_email %}
-            <span class="td-email-text" title="{{ t.contact_email }}">{{ t.contact_email }}</span>
-          {% else %}
-            <span class="text-dim" title="Not configured — contact form delivery may fail">
-              <iconify-icon icon="lucide:alert-circle" width="13" style="color:#f97316;margin-right:3px;vertical-align:-2px;"></iconify-icon>
-              Not set
-            </span>
           {% endif %}
         </td>
 
