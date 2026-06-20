@@ -91,14 +91,18 @@ services:
 
       # ── Superadmin bootstrap ─────────────────────────────────────
       # Set these in the Render dashboard.
-      # After first login, change the password via the UI,
-      # then REMOVE SUPERADMIN_PASSWORD from env vars.
+      # FIX [AUTH-1]: `flask create-superadmin` (run on every deploy) no
+      # longer overwrites an existing superadmin's password unless
+      # SUPERADMIN_PASSWORD is explicitly set for that run. It is now SAFE
+      # to leave SUPERADMIN_PASSWORD unset after first login — your changed
+      # password will persist across future deploys. Only set this var
+      # again when you intentionally want to force a password reset.
       - key: SUPERADMIN_USERNAME
         value: superadmin
       - key: SUPERADMIN_EMAIL
         sync: false         # set your real admin email in Render dashboard
       - key: SUPERADMIN_PASSWORD
-        sync: false         # set a strong password, remove after first login
+        sync: false         # only set this to intentionally force-reset the password
 
       # ── Email — MailerSend ───────────────────────────────────────
       - key: MAILERSEND_API_KEY

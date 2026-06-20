@@ -1220,13 +1220,24 @@ def register_cli_commands(app):
 
     @app.cli.command('create-superadmin')
     def cli_create_superadmin():
-        """Create or reset the superadmin account."""
+        """Create the superadmin account, or ensure roles/tenant are correct if it
+        already exists.
+
+        FIX [AUTH-1]: This command runs on EVERY deploy (render.yaml preDeployCommand),
+        not just the first. The previous version unconditionally overwrote the
+        existing superadmin's password with a freshly random one whenever
+        SUPERADMIN_PASSWORD was not set as an env var — silently locking operators
+        out of their own admin account on every redeploy. Password is now only
+        ever set/changed when SUPERADMIN_PASSWORD is explicitly provided in the
+        environment for that run (an intentional reset). An existing account's
+        password is left untouched otherwise.
+        """
         import secrets as _secrets
         import os as _os
         from app.models import User
         from app.models.portfolio import Tenant
 
-        password = _os.environ.get('SUPERADMIN_PASSWORD', _secrets.token_urlsafe(16))
+        explicit_password = _os.environ.get('SUPERADMIN_PASSWORD')
         existing = User.query.filter_by(username='superadmin').first()
 
         tenant = Tenant.query.filter_by(slug='default').first()
@@ -1239,18 +1250,24 @@ def register_cli_commands(app):
             db.session.flush()
 
         if existing:
-            existing.password      = password
             existing.is_superadmin = True
             existing.is_admin      = True
             existing.tenant        = tenant
             existing.tenant_slug   = tenant.slug
-            db.session.commit()
-            click.echo('✔  Superadmin already exists — password reset:')
-            click.echo(f'   Username: superadmin')
-            click.echo(f'   New password: {password}')
+            if explicit_password:
+                existing.password = explicit_password
+                db.session.commit()
+                click.echo('✔  Superadmin already exists — password reset (SUPERADMIN_PASSWORD was set):')
+                click.echo(f'   Username: superadmin')
+                click.echo(f'   New password: {explicit_password}')
+            else:
+                db.session.commit()
+                click.echo('✔  Superadmin already exists — password left UNCHANGED.')
+                click.echo('   (Set SUPERADMIN_PASSWORD env var for this run to force a reset.)')
             click.echo('   Login at: /superadmin/login')
             return
 
+        password = explicit_password or _secrets.token_urlsafe(16)
         superadmin = User(
             username='superadmin',
             email='superadmin@portfolio.local',
