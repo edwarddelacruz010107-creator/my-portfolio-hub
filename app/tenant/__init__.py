@@ -545,6 +545,49 @@ def contact():
 
     log_activity('create', 'inquiry', name, f'Contact from {email} to tenant {tenant_slug!r}')
 
+    portfolio_name = (profile.name if profile and profile.name else tenant_slug.replace('-', ' ').title())
+    submitted_ts = inquiry.created_at.strftime('%B %d, %Y %I:%M %p UTC') if inquiry.created_at else ''
+
+    def _send_notification(to_email: str) -> tuple[bool, str]:
+        """
+        Shared MailerSend notification — exact template per spec.
+        Subject: New Contact Form Submission - {{ portfolio_name }}
+        Reply-To: visitor email (tenant can hit Reply directly).
+        """
+        from app.services.mailersend_service import send_email_with_retry
+        html_body = (
+            f'<div style="font-family:sans-serif;max-width:600px;padding:1.5rem;'
+            f'border:1px solid #e5e7eb;border-radius:8px;">'
+            f'<h3 style="margin-top:0;">New Contact Form Submission</h3>'
+            f'<p>You have received a new contact form submission.</p>'
+            f'<p><strong>Name:</strong><br>{name}</p>'
+            f'<p><strong>Email:</strong><br>{email}</p>'
+            f'<p><strong>Subject:</strong><br>{subject or "(no subject)"}</p>'
+            f'<hr style="border:none;border-top:1px solid #e5e7eb;">'
+            f'<p><strong>Message:</strong></p>'
+            f'<p style="white-space:pre-wrap;">{message}</p>'
+            f'<hr style="border:none;border-top:1px solid #e5e7eb;">'
+            f'<p style="color:#6b7280;font-size:0.85em;">Submitted: {submitted_ts}</p>'
+            f'</div>'
+        )
+        text_body = (
+            f'You have received a new contact form submission.\n\n'
+            f'Name:\n{name}\n\n'
+            f'Email:\n{email}\n\n'
+            f'Subject:\n{subject}\n\n'
+            f'Message:\n{message}\n\n'
+            f'Submitted:\n{submitted_ts}'
+        )
+        ok = send_email_with_retry(
+            to_email=to_email,
+            subject=f'New Contact Form Submission - {portfolio_name}',
+            html_content=html_body,
+            text_content=text_body,
+            reply_to=email,  # visitor's email — tenant can Reply directly
+            max_retries=3,
+        )
+        return ok, ('' if ok else 'MailerSend delivery failed — saved to inbox')
+
     # Step 2: External delivery
     provider = 'internal'
     delivery_ok = False
@@ -566,6 +609,19 @@ def contact():
             _log.warning('contact[basin]: tenant=%s inquiry_id=%s error=%s',
                          tenant_slug, inquiry.id, delivery_error)
 
+        # Optional: also notify by email if a recipient is configured.
+        # Basin forwarding success/failure does NOT block this, and an email
+        # failure here does NOT downgrade an otherwise-successful Basin
+        # delivery — both are independent, best-effort channels.
+        notify_recipient = (form_settings.receiver_email or '').strip()
+        if notify_recipient:
+            email_ok, email_err = _send_notification(notify_recipient)
+            if not email_ok:
+                _log.warning('contact[basin+email]: tenant=%s inquiry_id=%s email_error=%s',
+                             tenant_slug, inquiry.id, email_err)
+            # Basin result remains authoritative for delivery_ok/delivery_error;
+            # email is a bonus channel on top of Basin in this branch.
+
     elif provider in ('disabled', 'internal'):
         delivery_ok = True  # CMS inbox only — no external delivery needed
 
@@ -575,26 +631,8 @@ def contact():
         if not recipient and profile and profile.tenant:
             recipient = (profile.tenant.contact_email or '').strip()
         if recipient:
-            from app.services.mailersend_service import send_email_with_retry
-            html_body = (
-                f'<div style="font-family:sans-serif;max-width:600px;padding:1.5rem;'
-                f'border:1px solid #e5e7eb;border-radius:8px;">'
-                f'<h3 style="margin-top:0;">New Contact Form Message</h3>'
-                f'<p><strong>From:</strong> {name} &lt;{email}&gt;</p>'
-                f'<p><strong>Subject:</strong> {subject or "(no subject)"}</p>'
-                f'<hr style="border:none;border-top:1px solid #e5e7eb;">'
-                f'<p style="white-space:pre-wrap;">{message}</p></div>'
-            )
-            delivery_ok = send_email_with_retry(
-                to_email=recipient,
-                subject=f'[Portfolio] New message from {name}',
-                html_content=html_body,
-                text_content=f'From: {name} <{email}>\nSubject: {subject}\n\n{message}',
-                reply_to=email,
-                max_retries=3,
-            )
+            delivery_ok, delivery_error = _send_notification(recipient)
             if not delivery_ok:
-                delivery_error = 'MailerSend delivery failed — saved to inbox'
                 _log.warning('contact[email_only]: tenant=%s inquiry_id=%s',
                              tenant_slug, inquiry.id)
         else:
@@ -607,23 +645,8 @@ def contact():
         if profile and profile.tenant:
             contact_dest = (profile.tenant.contact_email or '').strip()
         if contact_dest:
-            from app.services.mailersend_service import send_email_with_retry
-            html_body = (
-                f'<p><strong>New contact form submission</strong></p>'
-                f'<p><strong>From:</strong> {name} &lt;{email}&gt;</p>'
-                f'<p><strong>Subject:</strong> {subject or "(no subject)"}</p>'
-                f'<hr><p style="white-space:pre-wrap">{message}</p>'
-            )
-            delivery_ok = send_email_with_retry(
-                to_email=contact_dest,
-                subject=f'[Portfolio] New message from {name}',
-                html_content=html_body,
-                text_content=f'From: {name} <{email}>\nSubject: {subject}\n\n{message}',
-                reply_to=email,
-                max_retries=3,
-            )
+            delivery_ok, delivery_error = _send_notification(contact_dest)
             if not delivery_ok:
-                delivery_error = 'MailerSend delivery failed'
                 _log.warning('contact[mailersend]: tenant=%s inquiry_id=%s',
                              tenant_slug, inquiry.id)
 

@@ -478,6 +478,8 @@ def validate_contact_payload() -> tuple[list[str], str, str, str, str]:
 
     if not message:
         errors.append("Message is required.")
+    elif len(message) < 10:
+        errors.append("Message must be at least 10 characters.")
     elif len(message) > 2000:
         errors.append("Message must be 2,000 characters or fewer.")
 
