@@ -17,8 +17,8 @@
 
 {# Status indicators #}
 <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-bottom:1.5rem;">
-  <span class="tag-sm {{ 'tag-success' if tenant.form_provider == 'basin' else 'tag-muted' }}">
-    {{ '✓ Basin configured' if tenant.form_provider == 'basin' else '○ Email Only' }}
+  <span class="tag-sm {{ 'tag-success' if (form_settings and form_settings.provider == 'basin') else 'tag-muted' }}">
+    {{ '✓ Basin configured' if (form_settings and form_settings.provider == 'basin') else '○ Email Only' }}
   </span>
   <span class="tag-sm {{ 'tag-success' if has_mailersend else 'tag-warn' }}">
     {{ '✓ MailerSend configured' if has_mailersend else '○ MailerSend: using global' }}
@@ -40,17 +40,17 @@
         <div class="form-group">
           <label class="form-label">Provider</label>
           <div style="display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:1rem;">
-            <label class="radio-card {{ 'radio-card-active' if tenant.form_provider != 'basin' else '' }}" style="flex:1;min-width:180px;">
+            <label class="radio-card {{ 'radio-card-active' if not (form_settings and form_settings.provider == 'basin') else '' }}" style="flex:1;min-width:180px;">
               <input type="radio" name="form_provider" value="email"
-                {{ 'checked' if tenant.form_provider != 'basin' else '' }}>
+                {{ 'checked' if not (form_settings and form_settings.provider == 'basin') else '' }}>
               <div>
                 <strong>Email Only</strong>
                 <p class="field-hint" style="margin:0;">Deliver notifications to the tenant recipient email and store in inbox.</p>
               </div>
             </label>
-            <label class="radio-card {{ 'radio-card-active' if tenant.form_provider == 'basin' else '' }}" style="flex:1;min-width:180px;">
+            <label class="radio-card {{ 'radio-card-active' if (form_settings and form_settings.provider == 'basin') else '' }}" style="flex:1;min-width:180px;">
               <input type="radio" name="form_provider" value="basin"
-                {{ 'checked' if tenant.form_provider == 'basin' else '' }}>
+                {{ 'checked' if (form_settings and form_settings.provider == 'basin') else '' }}>
               <div>
                 <strong>Basin</strong>
                 <p class="field-hint" style="margin:0;">Forwarded to tenant's Basin endpoint.</p>
@@ -59,7 +59,7 @@
           </div>
         </div>
 
-        <div id="emailSection" style="{{ 'display:none;' if tenant.form_provider == 'basin' else '' }}">
+        <div id="emailSection" style="{{ 'display:none;' if (form_settings and form_settings.provider == 'basin') else '' }}">
           <div class="form-group">
             <label class="form-label" for="recipient_email">Recipient Email</label>
             <input
@@ -67,7 +67,7 @@
               id="recipient_email"
               name="recipient_email"
               class="form-input"
-              value="{{ tenant.contact_email or '' }}"
+              value="{{ (form_settings.receiver_email if form_settings else '') or tenant.contact_email or '' }}"
               placeholder="you@yourdomain.com"
               maxlength="200"
             >
@@ -75,11 +75,11 @@
           </div>
         </div>
 
-        <div id="basinSection" style="{{ 'display:none;' if tenant.form_provider != 'basin' else '' }}">
+        <div id="basinSection" style="{{ 'display:none;' if not (form_settings and form_settings.provider == 'basin') else '' }}">
           <div class="form-group">
             <label class="form-label" for="basin_endpoint">
               Basin Endpoint URL
-              {% if tenant.basin_endpoint %}
+              {% if form_settings and form_settings.form_endpoint %}
                 <span class="badge badge-success" style="margin-left:.5rem;">Set</span>
               {% endif %}
             </label>
@@ -88,7 +88,7 @@
               id="basin_endpoint"
               name="basin_endpoint"
               class="form-input"
-              value="{{ tenant.basin_endpoint or '' }}"
+              value="{{ (form_settings.form_endpoint if form_settings else '') or '' }}"
               placeholder="https://usebasin.com/f/abcd1234"
               maxlength="500"
             >

@@ -1624,10 +1624,14 @@ def settings():
             flash('Password changed successfully!', 'success')
         else:
             flash('Current password is incorrect.', 'danger')
-    # Pass tenant for Basin/contact form settings
+    # Pass tenant + the real per-tenant form settings (TenantFormSettings is
+    # what app/tenant/__init__.py:contact() actually reads at delivery time;
+    # tenant.form_provider/basin_endpoint are legacy display-only columns).
     from app.models.portfolio import Tenant
+    from app.models.tenant_form_settings import TenantFormSettings
     tenant = Tenant.query.filter_by(slug=_active_tenant_slug()).first()
-    return render_template('admin/settings.html', form=form, tenant=tenant)
+    form_settings = TenantFormSettings.get_or_create(tenant.id) if tenant else None
+    return render_template('admin/settings.html', form=form, tenant=tenant, form_settings=form_settings)
 
 
 # ── Activity Log ──────────────────────────────────────────────────────────────
@@ -1832,9 +1836,7 @@ def forgot_password_verify():
             _session['_admin_pw_reset_token'] = token
             return redirect(url_for('admin.forgot_password_reset'))
 
-    from app.services.password_reset_service import _get_ttl_minutes
-    return render_template('admin/forgot_password_verify.html', email=email,
-                           otp_ttl_minutes=_get_ttl_minutes())
+    return render_template('admin/forgot_password_verify.html', email=email)
 
 
 @admin.route('/forgot-password/reset', methods=['GET', 'POST'])
@@ -1908,9 +1910,30 @@ def notification_mark_read(notif_id):
 @admin.route('/settings/contact-form', methods=['POST'])
 @login_required
 def update_contact_form_provider():
-    """Update tenant contact form provider (internal | basin). v4.1"""
+    """
+    Update tenant contact form provider (email_only | basin). v5.5 FIX
+
+    BUG (found in audit): this handler previously wrote only to the legacy
+    Tenant.form_provider / Tenant.basin_endpoint columns. The actual contact
+    form delivery engine (app/tenant/__init__.py: contact()) reads exclusively
+    from TenantFormSettings — a completely separate, properly tenant-isolated
+    table. Because nothing ever wrote to TenantFormSettings from this page,
+    every tenant's row stayed at its disabled default, so submissions always
+    fell back to "internal inbox only" regardless of what was selected here.
+
+    Additionally, recipient_email was never read from the POST body at all —
+    there was no column on Tenant to store it, so it was silently discarded.
+
+    This handler now writes to TenantFormSettings (the table delivery actually
+    reads) and also mirrors the recipient email onto Tenant.contact_email,
+    since contact() falls back to that field if TenantFormSettings.receiver_email
+    is empty. Legacy Tenant.form_provider/basin_endpoint are kept in sync only
+    for backward-compatible display elsewhere — they are not used for delivery.
+    """
     from app.models.portfolio import Tenant
+    from app.models.tenant_form_settings import TenantFormSettings
     from app.services.basin_service import validate_basin_endpoint
+    import re as _re
 
     tenant_slug = _active_tenant_slug()
     tenant = Tenant.query.filter_by(slug=tenant_slug).first()
@@ -1918,13 +1941,16 @@ def update_contact_form_provider():
         flash('Tenant not found.', 'danger')
         return redirect(url_for('admin.settings'))
 
-    form_provider  = request.form.get('form_provider', 'internal').strip()
-    basin_endpoint = request.form.get('basin_endpoint', '').strip()
+    # Template radios send 'email' | 'basin'; TenantFormSettings stores
+    # 'email_only' | 'basin' (see VALID_PROVIDERS in tenant_form_settings.py).
+    raw_provider     = request.form.get('form_provider', 'email').strip()
+    basin_endpoint   = request.form.get('basin_endpoint', '').strip()
+    recipient_email  = request.form.get('recipient_email', '').strip().lower()
 
-    if form_provider not in ('internal', 'basin'):
-        form_provider = 'internal'
+    provider = 'basin' if raw_provider == 'basin' else 'email_only'
+    settings = TenantFormSettings.get_or_create(tenant.id)
 
-    if form_provider == 'basin':
+    if provider == 'basin':
         if not basin_endpoint:
             flash('A Basin endpoint URL is required when selecting Basin.', 'danger')
             return redirect(url_for('admin.settings'))
@@ -1932,9 +1958,24 @@ def update_contact_form_provider():
         if not valid:
             flash(f'Invalid Basin endpoint: {err}', 'danger')
             return redirect(url_for('admin.settings'))
+        settings.form_endpoint = basin_endpoint
+    else:
+        if not recipient_email or not _re.match(r'^[^\s@]+@[^\s@]+\.[^\s@]{2,}$', recipient_email):
+            flash('A valid recipient email is required for Email Only.', 'danger')
+            return redirect(url_for('admin.settings'))
+        settings.receiver_email = recipient_email
+        settings.form_endpoint  = None
+        tenant.contact_email    = recipient_email  # kept in sync for the contact() fallback path
+
+    settings.provider   = provider
+    settings.is_enabled = True
+
+    # Legacy columns — retained for any remaining display-only template reads,
+    # NOT used by the actual delivery engine.
+    tenant.form_provider  = 'basin' if provider == 'basin' else 'internal'
+    if provider == 'basin':
         tenant.basin_endpoint = basin_endpoint
 
-    tenant.form_provider = form_provider
     db.session.commit()
     flash('Contact form provider saved.', 'success')
     return redirect(url_for('admin.settings'))

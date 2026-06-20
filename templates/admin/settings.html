@@ -207,18 +207,18 @@
         <div style="display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:1rem;">
           <label style="display:flex;align-items:center;gap:.5rem;cursor:pointer;">
             <input type="radio" name="form_provider" value="email"
-              {{ 'checked' if (tenant.form_provider or 'internal') != 'basin' else '' }}>
+              {{ 'checked' if (form_settings.provider if form_settings else 'email_only') != 'basin' else '' }}>
             Email Only
           </label>
           <label style="display:flex;align-items:center;gap:.5rem;cursor:pointer;">
             <input type="radio" name="form_provider" value="basin"
-              {{ 'checked' if tenant.form_provider == 'basin' else '' }}>
+              {{ 'checked' if (form_settings and form_settings.provider == 'basin') else '' }}>
             Basin
           </label>
         </div>
       </div>
 
-      <div id="emailSectionAdmin" style="{{ 'display:none;' if tenant.form_provider == 'basin' else '' }}">
+      <div id="emailSectionAdmin" style="{{ 'display:none;' if (form_settings and form_settings.provider == 'basin') else '' }}">
         <div class="form-group">
           <label class="form-label" for="recipient_email_admin">Recipient Email</label>
           <input
@@ -226,7 +226,7 @@
             id="recipient_email_admin"
             name="recipient_email"
             class="form-input"
-            value="{{ tenant.contact_email or '' }}"
+            value="{{ (form_settings.receiver_email if form_settings else '') or tenant.contact_email or '' }}"
             placeholder="you@yourdomain.com"
             maxlength="200"
           >
@@ -234,7 +234,7 @@
         </div>
       </div>
 
-      <div id="basinSectionAdmin" style="{{ 'display:none;' if (tenant.form_provider or 'internal') != 'basin' else '' }}">
+      <div id="basinSectionAdmin" style="{{ 'display:none;' if not (form_settings and form_settings.provider == 'basin') else '' }}">
         <div class="form-group">
           <label class="form-label" for="basin_endpoint_admin">Basin Endpoint URL</label>
           <input
@@ -242,7 +242,7 @@
             id="basin_endpoint_admin"
             name="basin_endpoint"
             class="form-input"
-            value="{{ tenant.basin_endpoint or '' }}"
+            value="{{ (form_settings.form_endpoint if form_settings else '') or '' }}"
             placeholder="https://usebasin.com/f/your-form-id"
             maxlength="500"
           >

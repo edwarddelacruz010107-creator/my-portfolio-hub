@@ -2065,9 +2065,7 @@ def forgot_password_verify():
             _session['_pw_reset_token'] = token
             return redirect(url_for('superadmin.forgot_password_reset'))
 
-    from app.services.password_reset_service import _get_ttl_minutes
-    return render_template('superadmin/forgot_password.html',
-                           otp_ttl_minutes=_get_ttl_minutes())  # reuse existing OTP entry template
+    return render_template('superadmin/forgot_password.html')  # reuse existing OTP entry template
 
 
 @superadmin.route('/forgot-password/reset', methods=['GET', 'POST'])
@@ -2566,31 +2564,49 @@ def tenant_communication(tenant_id):
     exclusively. Flask-Mail removed in v5.0.
     """
     from app.models.portfolio import Tenant, Profile
+    from app.models.tenant_form_settings import TenantFormSettings
     from app.services.basin_service import validate_basin_endpoint
+    import re as _re
 
     tenant  = Tenant.query.get_or_404(tenant_id)
     profile = Profile.query.filter_by(tenant_id=tenant_id).first_or_404()
     comm    = TenantCommunicationSettings.get_or_create(tenant_id, profile.tenant_slug)
+    form_settings = TenantFormSettings.get_or_create(tenant_id)
 
     if request.method == 'POST':
         # ── Contact form provider ─────────────────────────────────────────
-        form_provider  = request.form.get('form_provider', 'internal').strip()
-        basin_endpoint = request.form.get('basin_endpoint', '').strip()
+        # v5.5 FIX: previously wrote only to legacy Tenant.form_provider /
+        # Tenant.basin_endpoint, which app/tenant/__init__.py:contact() never
+        # reads (it reads TenantFormSettings exclusively) — superadmin edits
+        # here had no effect on actual delivery. Now writes TenantFormSettings
+        # directly, same as the tenant-admin settings page fix.
+        raw_provider     = request.form.get('form_provider', 'email').strip()
+        basin_endpoint   = request.form.get('basin_endpoint', '').strip()
+        recipient_email  = request.form.get('recipient_email', '').strip().lower()
 
-        if form_provider not in ('internal', 'basin'):
-            form_provider = 'internal'
+        provider = 'basin' if raw_provider == 'basin' else 'email_only'
 
-        if form_provider == 'basin' and basin_endpoint:
+        if provider == 'basin' and basin_endpoint:
             valid, err = validate_basin_endpoint(basin_endpoint)
             if not valid:
                 flash(f'Invalid Basin endpoint: {err}', 'danger')
                 return redirect(url_for('superadmin.tenant_communication', tenant_id=tenant_id))
+            form_settings.form_endpoint = basin_endpoint
             tenant.basin_endpoint = basin_endpoint
-        elif form_provider == 'internal':
-            # Don't wipe basin_endpoint so they can re-enable without retyping
-            pass
+        elif provider == 'email_only':
+            if recipient_email and not _re.match(r'^[^\s@]+@[^\s@]+\.[^\s@]{2,}$', recipient_email):
+                flash('Invalid recipient email format.', 'danger')
+                return redirect(url_for('superadmin.tenant_communication', tenant_id=tenant_id))
+            if recipient_email:
+                form_settings.receiver_email = recipient_email
+                tenant.contact_email = recipient_email
+            form_settings.form_endpoint = None
 
-        tenant.form_provider = form_provider
+        form_settings.provider   = provider
+        form_settings.is_enabled = True
+
+        # Legacy columns — display-only elsewhere, not used for delivery.
+        tenant.form_provider = provider if provider == 'basin' else 'internal'
 
         # ── SMTP ──────────────────────────────────────────────────────────
         comm.mail_username       = request.form.get('mail_username', '').strip()
@@ -2611,6 +2627,9 @@ def tenant_communication(tenant_id):
         if request.form.get('reset_to_defaults'):
             tenant.form_provider  = 'internal'
             tenant.basin_endpoint = None
+            form_settings.provider      = 'disabled'
+            form_settings.is_enabled    = False
+            form_settings.form_endpoint = None
             comm.mail_username       = ''
             comm.mail_password       = ''
             comm.mail_default_sender = ''
@@ -2634,6 +2653,7 @@ def tenant_communication(tenant_id):
         profile=profile,
         tenant=tenant,
         comm=comm,
+        form_settings=form_settings,
         has_smtp=comm.has_smtp,
         page_title=f'Communication — {profile.tenant_slug}',
     )
