@@ -195,18 +195,6 @@
             </ul>
 
             <div class="nav-actions">
-                {#
-                  Show "Administrator" only when the logged-in user IS the admin
-                  of THIS specific portfolio — i.e. their tenant_slug matches the
-                  profile being viewed.  Prevents the default-admin (or any other
-                  tenant's admin) from seeing the badge on someone else's portfolio.
-                #}
-                {% if current_user.is_authenticated and current_user.is_admin
-                      and profile
-                      and current_user.tenant_slug == profile.tenant_slug %}
-                    <span class="admin-badge">Administrator</span>
-                {% endif %}
-
                 <button class="theme-toggle" id="themeToggle" aria-label="Toggle theme">
                     <iconify-icon icon="lucide:moon" class="theme-icon moon-icon"></iconify-icon>
                     <iconify-icon icon="lucide:sun" class="theme-icon sun-icon"></iconify-icon>
@@ -234,11 +222,6 @@
                 <li><a href="{{ url_for('main.billing') }}" class="mobile-nav-link">Billing</a></li>
                 {% elif profile and profile.tenant_slug != 'default' %}
                 <li><a href="{{ url_for('tenant.billing', tenant_slug=profile.tenant_slug) }}" class="mobile-nav-link">Billing</a></li>
-                {% endif %}
-                {% if current_user.is_authenticated and current_user.is_admin
-                      and profile
-                      and current_user.tenant_slug == profile.tenant_slug %}
-                <li><span class="mobile-nav-link" style="cursor:default;opacity:0.6;">Administrator</span></li>
                 {% endif %}
             </ul>
         </div>
