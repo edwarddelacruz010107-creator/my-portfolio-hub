@@ -155,7 +155,7 @@
     <script src="https://unpkg.com/iconify-icon@1.0.7/dist/iconify-icon.min.js" defer></script>
 
     <!-- Custom Stylesheet -->
-    <link rel="stylesheet" href="{{ asset_url('css/style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 <base target="_blank">
 </head>
 <body>
@@ -1055,6 +1055,6 @@
     <div class="toast-container" id="toastContainer"></div>
 
     <!-- JavaScript -->
-    <script src="{{ asset_url('js/script.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/script.js') }}"></script>
 </body>
 </html>

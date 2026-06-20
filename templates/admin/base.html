@@ -9,7 +9,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,300&display=swap" rel="stylesheet"/>
   <script src="https://code.iconify.design/iconify-icon/1.0.7/iconify-icon.min.js" defer></script>
   <script src="https://unpkg.com/iconify-icon@1.0.7/dist/iconify-icon.min.js" defer></script>
-  <link rel="stylesheet" href="{{ asset_url('css/admin.css') }}"/>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/admin.css') }}"/>
   {% block extra_css %}{% endblock %}
   <link rel="icon" href="{{ url_for('static', filename='image/icon.ico') }}" type="image/x-icon">
 </head>
@@ -310,7 +310,7 @@
     setTimeout(() => el.remove(), 4500);
   });
 </script>
-<script src="{{ asset_url('js/admin.js') }}"></script>
+<script src="{{ url_for('static', filename='js/admin.js') }}"></script>
 {% block extra_js %}{% endblock %}
 
 </html>

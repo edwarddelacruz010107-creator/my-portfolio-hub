@@ -310,6 +310,69 @@
 
   </div>
 
+
+  {# ── Heartbeat / Uptime ──────────────────────────────── #}
+  <div class="dash-panel heartbeat-panel">
+    <div class="panel-header">
+      <div>
+        <span class="section-tag">Monitoring</span>
+        <h2>Uptime &amp; Heartbeat</h2>
+      </div>
+      <a href="/health" target="_blank" class="btn btn-sm btn-ghost">
+        Full Report
+        <iconify-icon icon="lucide:external-link" width="12"></iconify-icon>
+      </a>
+    </div>
+
+    <div class="heartbeat-grid">
+      <div class="hb-card">
+        <div class="hb-label">Last Heartbeat</div>
+        {% if heartbeat_state.last_heartbeat_at %}
+          <div class="hb-value hb-ok">
+            <span class="hb-dot hb-dot--green"></span>
+            <span class="hb-time" title="{{ heartbeat_state.last_heartbeat_at }}">
+              {{ heartbeat_state.last_heartbeat_at[:19] | replace("T"," ") }} UTC
+            </span>
+          </div>
+        {% else %}
+          <div class="hb-value hb-warn">
+            <span class="hb-dot hb-dot--yellow"></span>
+            <span>No ping yet this session</span>
+          </div>
+        {% endif %}
+      </div>
+      <div class="hb-card">
+        <div class="hb-label">Database</div>
+        {% if heartbeat_state.db_ok is none %}
+          <div class="hb-value hb-neutral"><span class="hb-dot hb-dot--grey"></span> Not checked yet</div>
+        {% elif heartbeat_state.db_ok %}
+          <div class="hb-value hb-ok"><span class="hb-dot hb-dot--green"></span> Connected</div>
+        {% else %}
+          <div class="hb-value hb-error"><span class="hb-dot hb-dot--red"></span> Unreachable</div>
+        {% endif %}
+      </div>
+      <div class="hb-card">
+        <div class="hb-label">Self-Ping</div>
+        {% if heartbeat_state.last_selfping_at %}
+          <div class="hb-value {% if heartbeat_state.selfping_ok %}hb-ok{% else %}hb-error{% endif %}">
+            <span class="hb-dot {% if heartbeat_state.selfping_ok %}hb-dot--green{% else %}hb-dot--red{% endif %}"></span>
+            <span class="hb-time">{{ heartbeat_state.last_selfping_at[:19] | replace("T"," ") }} UTC</span>
+          </div>
+        {% else %}
+          <div class="hb-value hb-neutral"><span class="hb-dot hb-dot--grey"></span> Disabled / not run</div>
+        {% endif %}
+      </div>
+      <div class="hb-card hb-card--links">
+        <div class="hb-label">Endpoints</div>
+        <div class="hb-links">
+          <a href="/heartbeat" target="_blank" class="hb-link">/heartbeat</a>
+          <a href="/api/heartbeat" target="_blank" class="hb-link">/api/heartbeat</a>
+          <a href="/health" target="_blank" class="hb-link">/health</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
 </div>
 
 {% endblock %}{# /block content #}

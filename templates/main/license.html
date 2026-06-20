@@ -6,7 +6,7 @@
     <title>License Activation | {{ profile.name or 'Portfolio' }}</title>
     <meta name="description" content="Activate your license key for {{ profile.name or 'your portfolio' }}.">
     <link rel="shortcut icon" href="{{ url_for('static', filename='image/icon.ico') }}" type="image/x-icon">
-    <link rel="stylesheet" href="{{ asset_url('css/style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 <body>
     <main class="license-page">
