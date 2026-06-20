@@ -107,6 +107,10 @@ class BaseConfig:
     TOTP_VALID_WINDOW        = int(os.environ.get('TOTP_VALID_WINDOW', '1'))
     OTP_EXPIRATION_SECONDS   = int(os.environ.get('OTP_EXPIRATION_SECONDS', '600'))
     OTP_MAX_ATTEMPTS         = int(os.environ.get('OTP_MAX_ATTEMPTS', '5'))
+    # Post-OTP-verification reset token (short-lived bridge to the Set New
+    # Password form) — separate from the OTP itself, which uses the
+    # SuperAdmin-configured GlobalEmailConfig.otp_expiry_minutes.
+    PASSWORD_RESET_EXPIRATION_MINUTES = int(os.environ.get('PASSWORD_RESET_EXPIRATION_MINUTES', '15'))
 
     # Password Policy
     MIN_PASSWORD_LENGTH    = 12
