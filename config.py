@@ -175,7 +175,12 @@ class BaseConfig:
     PAYMONGO_WEBHOOK_SECRET  = os.environ.get('PAYMONGO_WEBHOOK_SECRET', '')
 
     WEB3FORMS_ACCESS_KEY     = os.environ.get('WEB3FORMS_ACCESS_KEY', '')
-    SENTRY_DSN               = os.environ.get('SENTRY_DSN', '')
+    # ADMIN_EMAIL: destination for the default/root-tenant contact form and
+    # as a fallback notification address. Read via current_app.config in
+    # app/main/__init__.py, app/utils/__init__.py, and app/models/core.py —
+    # must be loaded here or those lookups always return None.
+    ADMIN_EMAIL               = os.environ.get('ADMIN_EMAIL', '')
+    SENTRY_DSN                = os.environ.get('SENTRY_DSN', '')
     BETTERSTACK_HEARTBEAT_URL = os.environ.get('BETTERSTACK_HEARTBEAT_URL', '')
     HEARTBEAT_SECRET         = os.environ.get('HEARTBEAT_SECRET', '')
 
