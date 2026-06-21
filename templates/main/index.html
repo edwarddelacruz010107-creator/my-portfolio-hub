@@ -304,6 +304,13 @@
                             alt="{% if profile %}{{ profile.name }}{% else %}Portfolio{% endif %}" 
                             class="hero-avatar"
                         >
+                        {% if profile %}
+                        <!-- Administrator Badge: only ever rendered for the portfolio owner -->
+                        <div class="admin-badge" title="Portfolio Administrator">
+                            <iconify-icon icon="lucide:shield-check" width="14"></iconify-icon>
+                            <span>Administrator</span>
+                        </div>
+                        {% endif %}
                         <!-- Floating Tech Badges -->
                         <div class="float-badge badge-1">
                             <iconify-icon icon="logos:react" width="24"></iconify-icon>
