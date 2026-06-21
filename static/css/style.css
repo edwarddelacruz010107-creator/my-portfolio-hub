@@ -807,6 +807,48 @@ a.admin-badge:hover {
     50% { transform: translateY(-10px); }
 }
 
+/* Administrator Badge — portfolio owner indicator, upper-right of avatar */
+.admin-badge {
+    position: absolute;
+    top: 4%;
+    right: 2%;
+    z-index: 3;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 6px 12px 6px 10px;
+    border-radius: 999px;
+    background: linear-gradient(135deg, rgba(99, 102, 241, 0.95), rgba(79, 70, 229, 0.95));
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    color: #fff;
+    font-family: var(--font-display, inherit);
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+    box-shadow:
+        0 4px 16px rgba(99, 102, 241, 0.45),
+        0 0 0 4px rgba(99, 102, 241, 0.08);
+    backdrop-filter: blur(8px);
+    animation: adminBadgeGlow 3s ease-in-out infinite;
+}
+.admin-badge iconify-icon {
+    flex-shrink: 0;
+    filter: drop-shadow(0 0 3px rgba(255, 255, 255, 0.6));
+}
+@keyframes adminBadgeGlow {
+    0%, 100% {
+        box-shadow:
+            0 4px 16px rgba(99, 102, 241, 0.45),
+            0 0 0 4px rgba(99, 102, 241, 0.08);
+    }
+    50% {
+        box-shadow:
+            0 4px 22px rgba(99, 102, 241, 0.7),
+            0 0 0 6px rgba(99, 102, 241, 0.14);
+    }
+}
+
 /* Scroll Indicator */
 .scroll-indicator {
     position: absolute;
@@ -1893,6 +1935,10 @@ a.admin-badge:hover {
     .hero-visual {
         order: -1;
     }
+    .admin-badge {
+        font-size: 0.62rem;
+        padding: 5px 10px 5px 8px;
+    }
 
     .about-grid {
         grid-template-columns: 1fr;
@@ -1969,6 +2015,16 @@ a.admin-badge:hover {
     }
     .float-badge iconify-icon {
         width: 20px;
+    }
+    .admin-badge {
+        font-size: 0.58rem;
+        padding: 4px 9px 4px 7px;
+        gap: 4px;
+        top: 2%;
+        right: 0;
+    }
+    .admin-badge iconify-icon {
+        width: 12px;
     }
     .hero-stats {
         gap: 16px;
