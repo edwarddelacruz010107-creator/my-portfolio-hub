@@ -1,10 +1,14 @@
 """
-app/services/password_reset_service.py — Password reset orchestration (v3.8)
+app/services/password_reset_service.py — Password reset orchestration (v5.6)
 
-Three completely isolated reset flows:
-  A. Superadmin  — /superadmin/forgot-password
-  B. Admin        — /admin/forgot-password       (tenant admin users)
-  C. Tenant       — /tenant/forgot-password      (validates against contact_email)
+Three completely isolated OTP-based reset flows, all single sign-on surface
+linked from the shared login template (auth/login.html) via
+app.auth._render_login_page():
+  A. Superadmin — /superadmin/forgot-password/{request,verify,reset}
+  B. Admin       — /admin/forgot-password{,/verify,/reset}  (default-tenant /
+                    root-domain admin login, i.e. tenant admin users with no
+                    distinct subdomain)
+  C. Tenant      — /<tenant_slug>/auth/forgot-password{,/verify,/reset}
 
 Each flow:
   1. resolve_user()     → look up account, validate email
@@ -15,6 +19,12 @@ Each flow:
 Session security on password change:
   • session_token rotated → existing sessions invalidated
   • require_password_reset cleared
+
+v5.6: the legacy single-step "email -> emailed reset link" flow that used
+to live at auth.forgot_password / auth.reset_password has been retired.
+Those two endpoints are now thin permanent redirects into flow B above —
+see app/auth/__init__.py. No code path in this module ever generates a
+clickable reset link; all three flows are OTP-only.
 """
 import hashlib
 import logging
