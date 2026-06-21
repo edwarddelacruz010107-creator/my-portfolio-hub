@@ -151,6 +151,89 @@
       </div>
     </div>
 
+    {# ── PER-PORTAL API CONFIGURATION (v5.6) ───────────────────────────────── #}
+    <div class="form-card">
+      <div class="form-card-header">
+        <iconify-icon icon="lucide:layers" width="18"></iconify-icon>
+        <h3>Per-Portal MailerSend Configuration</h3>
+      </div>
+      <div class="form-card-body">
+        <p class="field-hint" style="margin-bottom:1.25rem;">
+          Optionally configure separate MailerSend API keys, sender emails, and display names for
+          each portal. If left blank, each portal falls back to the shared key and sender above.<br>
+          Env-var fallbacks: <code>ADMIN_MAILERSEND_API_KEY</code>, <code>SUPERADMIN_MAILERSEND_API_KEY</code>,
+          <code>ADMIN_MAIL_FROM</code>, <code>SUPERADMIN_MAIL_FROM</code>, <code>ADMIN_MAIL_NAME</code>, <code>SUPERADMIN_MAIL_NAME</code>.
+        </p>
+
+        {# Admin Portal #}
+        <div style="border:1px solid var(--border-color,#e5e7eb);border-radius:10px;padding:1.25rem;margin-bottom:1.25rem;">
+          <h4 style="margin:0 0 1rem;font-size:.875rem;font-weight:600;display:flex;align-items:center;gap:.5rem;">
+            <iconify-icon icon="lucide:shield" width="16"></iconify-icon>
+            Admin Portal
+            <span class="badge {{ 'badge-success' if cfg.has_admin_mailersend else 'badge-muted' }}" style="margin-left:.5rem;font-size:.7rem;">
+              {{ '✓ Custom key configured' if cfg.has_admin_mailersend else '○ Using shared key' }}
+            </span>
+          </h4>
+          <div class="form-row">
+            <div class="form-col">
+              <label class="form-label" for="admin_mailersend_api_key">API Key</label>
+              <input type="password" id="admin_mailersend_api_key" name="admin_mailersend_api_key"
+                class="form-input" autocomplete="off"
+                placeholder="{{ '●●●●●●●● (set — enter new value to replace)' if cfg.has_admin_mailersend else 'Leave blank to use shared key' }}">
+            </div>
+            <div class="form-col">
+              <label class="form-label" for="admin_sender_email">Sender Email</label>
+              <input type="email" id="admin_sender_email" name="admin_sender_email"
+                class="form-input" value="{{ cfg.admin_sender_email or '' }}"
+                placeholder="Leave blank to use shared sender">
+            </div>
+            <div class="form-col">
+              <label class="form-label" for="admin_sender_name">Sender Name</label>
+              <input type="text" id="admin_sender_name" name="admin_sender_name"
+                class="form-input" value="{{ cfg.admin_sender_name or '' }}"
+                placeholder="Leave blank to use shared name">
+            </div>
+          </div>
+        </div>
+
+        {# Superadmin Portal #}
+        <div style="border:1px solid var(--border-color,#e5e7eb);border-radius:10px;padding:1.25rem;">
+          <h4 style="margin:0 0 1rem;font-size:.875rem;font-weight:600;display:flex;align-items:center;gap:.5rem;">
+            <iconify-icon icon="lucide:shield-check" width="16"></iconify-icon>
+            Superadmin Portal
+            <span class="badge {{ 'badge-success' if cfg.has_superadmin_mailersend else 'badge-muted' }}" style="margin-left:.5rem;font-size:.7rem;">
+              {{ '✓ Custom key configured' if cfg.has_superadmin_mailersend else '○ Using shared key' }}
+            </span>
+          </h4>
+          <div class="form-row">
+            <div class="form-col">
+              <label class="form-label" for="superadmin_mailersend_api_key">API Key</label>
+              <input type="password" id="superadmin_mailersend_api_key" name="superadmin_mailersend_api_key"
+                class="form-input" autocomplete="off"
+                placeholder="{{ '●●●●●●●● (set — enter new value to replace)' if cfg.has_superadmin_mailersend else 'Leave blank to use shared key' }}">
+            </div>
+            <div class="form-col">
+              <label class="form-label" for="superadmin_sender_email">Sender Email</label>
+              <input type="email" id="superadmin_sender_email" name="superadmin_sender_email"
+                class="form-input" value="{{ cfg.superadmin_sender_email or '' }}"
+                placeholder="Leave blank to use shared sender">
+            </div>
+            <div class="form-col">
+              <label class="form-label" for="superadmin_sender_name">Sender Name</label>
+              <input type="text" id="superadmin_sender_name" name="superadmin_sender_name"
+                class="form-input" value="{{ cfg.superadmin_sender_name or '' }}"
+                placeholder="Leave blank to use shared name">
+            </div>
+          </div>
+        </div>
+
+        <p class="field-hint" style="margin-top:.75rem;">
+          <iconify-icon icon="lucide:info" width="13" style="vertical-align:middle;"></iconify-icon>
+          API keys are stored Fernet-encrypted in the database. They are never exposed in any response.
+        </p>
+      </div>
+    </div>
+
     {# ── Save ──────────────────────────────────────────────────────────────── #}
     <div class="form-actions">
       <button type="submit" class="btn btn-primary">
