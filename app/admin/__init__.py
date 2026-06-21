@@ -44,7 +44,7 @@ from flask import (session, Blueprint, render_template, redirect, url_for,
                    flash, request, jsonify, current_app, Response)
 from flask_login import login_required, current_user
 
-from app import db, limiter
+from app import db
 from app.models.portfolio import (Tenant, Profile, Skill, Project, Testimonial, Service,
                                    ActivityLog, Inquiry, InquiryReply, normalize_plan_name,
                                    get_plan_features)
@@ -296,25 +296,6 @@ def block_public_admin():
     Session mismatch corrections are now logged at INFO level so they appear in
     application logs and can be diagnosed without attaching a debugger.
     """
-    # ── Public exemption: password-reset OTP flow ─────────────────────────────
-    # v5.6 FIX (root cause #2): forgot_password / forgot_password_verify /
-    # forgot_password_reset are — by definition — only ever hit by users who
-    # are NOT authenticated (that's the whole point of a password reset).
-    # This gate previously had no exemption list at this stage (unlike the
-    # TOTP gate further down, which already uses a _bypass_endpoints set),
-    # so EVERY unauthenticated request to /admin/forgot-password* was bounced
-    # straight to /auth/login before the route body ever executed. The OTP
-    # backend (password_reset_service.initiate_admin_reset / verify_admin_otp
-    # / complete_admin_reset) was fully implemented and correct, but
-    # completely unreachable. Must run before the auth check below.
-    _public_reset_endpoints = {
-        'admin.forgot_password',
-        'admin.forgot_password_verify',
-        'admin.forgot_password_reset',
-    }
-    if request.endpoint in _public_reset_endpoints:
-        return
-
     # Check authentication: also treat as unauthenticated when the session
     # has no '_user_id' key (guards against Flask-Login's app-level user cache
     # leaking between test clients on a session-scoped test app, and handles
@@ -1811,15 +1792,8 @@ def show_new_backup_codes():
 
 # ── Admin Forgot Password (v3.8) ─────────────────────────────────────────────
 # Completely isolated from the superadmin flow.
-# v5.6 FIX: this OTP flow was fully built but never linked from the login page
-# (see app/auth/__init__.py:_render_login_page) — the default-tenant admin
-# login fell back to the legacy auth.forgot_password link-based flow instead.
-# Rate limits added here for parity with tenant.auth_forgot_password and
-# superadmin.forgot_password_request, which already had them.
 
 @admin.route('/forgot-password', methods=['GET', 'POST'])
-@limiter.limit('3 per minute', error_message='Too many requests. Please wait a moment.')
-@limiter.limit('5 per hour', error_message='Too many requests. Please try again later.')
 def forgot_password():
     """Step 1: Admin enters email → OTP dispatched."""
     from flask_login import current_user as _cu
@@ -1842,8 +1816,6 @@ def forgot_password():
 
 
 @admin.route('/forgot-password/verify', methods=['GET', 'POST'])
-@limiter.limit('5 per minute', error_message='Too many OTP attempts. Please wait.')
-@limiter.limit('10 per hour', error_message='Too many OTP attempts. Please try again later.')
 def forgot_password_verify():
     """Step 2: OTP verification."""
     from flask_login import current_user as _cu
@@ -1894,7 +1866,7 @@ def forgot_password_reset():
         if ok:
             _session.pop('_admin_pw_reset_email', None)
             _session.pop('_admin_pw_reset_token', None)
-            return redirect(url_for('admin.login_alias'))
+            return redirect(url_for('admin.login'))
 
     return render_template('admin/forgot_password_reset.html')
 

@@ -37,6 +37,7 @@ v3.4.2 (this version) — Default Tenant Hardening
 v3.1 (previous) — Account lockout, password policy, audit logging, 2FA.
 v3.0 — Initial multi-tenant auth.
 """
+import hashlib
 import logging
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse, urljoin
@@ -48,7 +49,7 @@ from flask_login import login_user, logout_user, login_required, current_user
 from app import db, limiter
 from app.models.portfolio import Profile
 from app.models import User
-from app.forms import LoginForm, TOTPVerifyForm
+from app.forms import LoginForm, TOTPVerifyForm, ForgotPasswordForm
 from app.utils import log_activity
 from app.security import AccountLockout, log_security_event
 from app.tenant_security import (
@@ -211,23 +212,14 @@ def _is_safe_url(target: str) -> bool:
 
 def _render_login_page(form, action_url, title, subtitle):
     from flask import request as _req
-    # Determine the correct forgot-password URL based on which portal is serving the login.
-    #
-    # v5.6 FIX: the 'else' branch previously pointed at auth.forgot_password —
-    # the legacy single-step "email -> reset link" flow. That flow is the
-    # ONLY one of the three login surfaces NOT backed by the OTP system, which
-    # is why the default-tenant / root-domain "Admin Portal" login appeared to
-    # use a different, broken reset mechanism even though the UI looked
-    # identical to the working tenant-OTP login page. admin.forgot_password
-    # already implements the same OTP flow as tenant.auth_forgot_password and
-    # superadmin.forgot_password_request — it just was never linked here.
+    # Determine the correct forgot-password URL based on which portal is serving the login
     path = _req.path
     if '/superadmin/' in path:
         forgot_url = url_for('superadmin.forgot_password_request')
     elif getattr(g, 'tenant_slug', None):
         forgot_url = url_for('tenant.auth_forgot_password', tenant_slug=g.tenant_slug)
     else:
-        forgot_url = url_for('admin.forgot_password')
+        forgot_url = url_for('auth.forgot_password')
 
     return render_template(
         'auth/login.html',
@@ -601,46 +593,139 @@ def logout():
 
 
 # ── Password Reset ─────────────────────────────────────────────────────────────
-# v5.6: The legacy single-step "email -> reset link -> click link -> set
-# password" flow has been REMOVED from this blueprint. It was the actual
-# root cause of the broken superadmin/admin "Send Reset Link" behaviour
-# described in the v5.6 audit: app/admin/__init__.py already contains a
-# complete, working OTP-based reset flow (forgot_password /
-# forgot_password_verify / forgot_password_reset, backed by
-# app/services/password_reset_service.py — the SAME service module and the
-# SAME create_otp_record()/send_otp_email() calls used by the tenant OTP
-# flow that was confirmed working) but the login page never linked to it;
-# see _render_login_page() above.
-#
-# These two routes are kept registered ONLY as permanent redirects, so that
-# any old bookmarks, emailed links, or external references to
-# /auth/forgot-password and /auth/reset-password/<token> do not 404 — they
-# now land on the single, shared OTP flow instead of a second parallel
-# implementation. No token is generated or consulted here.
 
 @auth.route('/forgot-password', methods=['GET', 'POST'])
 @limiter.limit('5 per minute', error_message='Too many requests. Please wait a moment and try again.')
 @limiter.limit('10 per hour', error_message='Too many requests. Please try again later.')
 def forgot_password():
-    """Legacy entry point — redirects to the working OTP-based reset flow."""
+    """
+    Step 1: request a password reset link.
+
+    v5.5 SECURITY FIX: previously accepted email ONLY, which is a weaker
+    identity check than every other portal in the app (tenant + superadmin
+    flows both require username + email to match the SAME user row before
+    issuing anything). Brought into line: this is now the username+email
+    gated entry point for the default-tenant / root-domain admin login.
+    No template duplication — the existing auth/forgot_password.html page
+    gained a username field; this is the only forgot-password surface for
+    the root-domain login path.
+    """
+
     if current_user.is_authenticated:
         return redirect(url_for('admin.dashboard'))
-    return redirect(url_for('admin.forgot_password'), code=301)
+
+    form = ForgotPasswordForm()
+
+    if request.method == 'POST':
+        email_input    = (form.email.data or request.form.get('email') or '').strip().lower()
+        username_input = (getattr(form, 'username', None) and form.username.data
+                           or request.form.get('username') or '').strip()
+        _success_msg = (
+            'If that username and email match an account, a reset link has been sent. '
+            'Check your inbox (and spam folder).'
+        )
+
+        if not email_input or not username_input:
+            flash('Username and email are both required.', 'danger')
+            return render_template('auth/forgot_password.html', form=form, action_url=request.path)
+
+        # v3.7 VULN-06 FIX: password reset scoped to active tenant to prevent
+        # cross-tenant reset when same email exists in multiple tenants.
+        # v5.5 FIX: username AND email must now match the SAME row (anti-
+        # enumeration parity with tenant.auth_forgot_password).
+        active_tenant = session.get('tenant_slug') or _DEFAULT_TENANT_SLUG
+        user = User.query.filter(
+            db.func.lower(User.email) == email_input,
+            User.username == username_input,
+            User.tenant_slug == active_tenant,
+        ).first()
+        # If no match in specific tenant, fall back to default tenant only
+        if not user and active_tenant != _DEFAULT_TENANT_SLUG:
+            user = User.query.filter(
+                db.func.lower(User.email) == email_input,
+                User.username == username_input,
+                User.tenant_slug == _DEFAULT_TENANT_SLUG,
+            ).first()
+
+        if user:
+            token     = user.generate_reset_token(expires_in_minutes=30)
+            db.session.commit()
+            reset_url = url_for('auth.reset_password', token=token, _external=True)
+            try:
+                from app.services.mailersend_service import send_verification_email
+                send_verification_email(
+                    recipient_email=user.email,
+                    username=user.username,
+                    verification_url=reset_url,
+                )
+                log_security_event(
+                    'password_reset_requested', user,
+                    f'Password reset requested from {_get_ip()}', 'info',
+                )
+            except Exception as exc:
+                logger.error('Failed to send password reset email: %s', exc)
+
+        flash(_success_msg, 'info')
+        return redirect(url_for('auth.login'))
+
+    return render_template('auth/forgot_password.html', form=form, action_url=request.path)
 
 
 @auth.route('/reset-password/<token>', methods=['GET', 'POST'])
 def reset_password(token: str):
-    """
-    Legacy reset-link entry point — REMOVED.
-
-    The link-based flow this route used to serve is retired; reset tokens
-    are now only ever issued internally (and immediately consumed) by the
-    OTP verify step, never emailed as a clickable link. Any inbound hit on
-    this URL (old email, bookmark, etc.) starts a fresh OTP request instead
-    of attempting to honour a token that the new flow never generated.
-    """
+    """Step 2: validate token and set a new password."""
     if current_user.is_authenticated:
         return redirect(url_for('admin.dashboard'))
-    flash('Password resets now use a one-time code sent to your email. '
-          'Please request a new code below.', 'info')
-    return redirect(url_for('admin.forgot_password'))
+
+    # v3.7 VULN-06 FIX: validate token AND confirm tenant matches
+    # v5.4 FIX: User.generate_reset_token() stores sha256(raw_token) in
+    # password_reset_token (see app/models/core.py). The raw token from the
+    # URL must be hashed before the lookup, or this query always returns
+    # zero rows — every reset link would report "invalid or expired"
+    # regardless of validity. Same bug class documented in
+    # password_reset_service.py's _hash_token(); this flow was missed.
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    user = User.query.filter_by(password_reset_token=token_hash).first()
+    if not user or not user.verify_reset_token(token):
+        flash('This reset link is invalid or has expired.', 'danger')
+        return redirect(url_for('auth.forgot_password'))
+    # Confirm the reset is being performed in the correct tenant context
+    active_tenant = session.get('tenant_slug') or _DEFAULT_TENANT_SLUG
+    user_tenant   = user.tenant_slug or _DEFAULT_TENANT_SLUG
+    if user_tenant != active_tenant and not active_tenant == _DEFAULT_TENANT_SLUG:
+        log_security_event(
+            'password_reset_tenant_mismatch', user,
+            f'Reset attempted from tenant {active_tenant!r} but token belongs to {user_tenant!r}',
+            'warning',
+        )
+        flash('This reset link is invalid or has expired.', 'danger')
+        return redirect(url_for('auth.forgot_password'))
+
+    if request.method == 'POST':
+        new_password     = request.form.get('new_password', '')
+        confirm_password = request.form.get('confirm_password', '')
+
+        from app.security import PasswordPolicy
+        is_valid, error_msg = PasswordPolicy.validate(new_password)
+        if not is_valid:
+            flash(error_msg, 'danger')
+            return render_template('auth/reset_password.html', token=token)
+
+        if new_password != confirm_password:
+            flash('Passwords do not match.', 'danger')
+            return render_template('auth/reset_password.html', token=token)
+
+        user.password               = new_password
+        user.clear_reset_token()
+        user.require_password_reset = False
+        user.last_password_changed  = datetime.now(timezone.utc)
+        db.session.commit()
+
+        log_security_event(
+            'password_reset_complete', user,
+            f'Password reset completed from {_get_ip()}', 'info',
+        )
+        flash('Password updated successfully. Please sign in.', 'success')
+        return redirect(url_for('auth.login'))
+
+    return render_template('auth/reset_password.html', token=token)
