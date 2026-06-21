@@ -380,6 +380,13 @@ class TOTPDisableForm(FlaskForm):
 
 
 class ForgotPasswordForm(FlaskForm):
-    """Step 1 of password reset — collect the user's email address."""
-    email  = StringField('Email Address', validators=[DataRequired(), Email()])
-    submit = SubmitField('Send Reset Link')
+    """
+    Step 1 of password reset — collect username + email.
+
+    v5.5 SECURITY FIX: previously email-only. Now requires username + email
+    to match the same account (parity with tenant.auth_forgot_password),
+    removing the weaker single-field identity check from the active flow.
+    """
+    username = StringField('Username', validators=[DataRequired()])
+    email    = StringField('Email Address', validators=[DataRequired(), Email()])
+    submit   = SubmitField('Send Reset Link')

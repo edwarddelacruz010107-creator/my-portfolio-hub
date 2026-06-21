@@ -598,7 +598,18 @@ def logout():
 @limiter.limit('5 per minute', error_message='Too many requests. Please wait a moment and try again.')
 @limiter.limit('10 per hour', error_message='Too many requests. Please try again later.')
 def forgot_password():
-    """Step 1: request a password reset email."""
+    """
+    Step 1: request a password reset link.
+
+    v5.5 SECURITY FIX: previously accepted email ONLY, which is a weaker
+    identity check than every other portal in the app (tenant + superadmin
+    flows both require username + email to match the SAME user row before
+    issuing anything). Brought into line: this is now the username+email
+    gated entry point for the default-tenant / root-domain admin login.
+    No template duplication — the existing auth/forgot_password.html page
+    gained a username field; this is the only forgot-password surface for
+    the root-domain login path.
+    """
 
     if current_user.is_authenticated:
         return redirect(url_for('admin.dashboard'))
@@ -606,22 +617,33 @@ def forgot_password():
     form = ForgotPasswordForm()
 
     if request.method == 'POST':
-        email_input  = (form.email.data or request.form.get('email') or '').strip().lower()
+        email_input    = (form.email.data or request.form.get('email') or '').strip().lower()
+        username_input = (getattr(form, 'username', None) and form.username.data
+                           or request.form.get('username') or '').strip()
         _success_msg = (
-            'If that email is registered, a reset link has been sent. '
+            'If that username and email match an account, a reset link has been sent. '
             'Check your inbox (and spam folder).'
         )
+
+        if not email_input or not username_input:
+            flash('Username and email are both required.', 'danger')
+            return render_template('auth/forgot_password.html', form=form, action_url=request.path)
+
         # v3.7 VULN-06 FIX: password reset scoped to active tenant to prevent
         # cross-tenant reset when same email exists in multiple tenants.
+        # v5.5 FIX: username AND email must now match the SAME row (anti-
+        # enumeration parity with tenant.auth_forgot_password).
         active_tenant = session.get('tenant_slug') or _DEFAULT_TENANT_SLUG
         user = User.query.filter(
             db.func.lower(User.email) == email_input,
+            User.username == username_input,
             User.tenant_slug == active_tenant,
         ).first()
         # If no match in specific tenant, fall back to default tenant only
         if not user and active_tenant != _DEFAULT_TENANT_SLUG:
             user = User.query.filter(
                 db.func.lower(User.email) == email_input,
+                User.username == username_input,
                 User.tenant_slug == _DEFAULT_TENANT_SLUG,
             ).first()
 
