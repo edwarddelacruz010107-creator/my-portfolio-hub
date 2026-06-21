@@ -885,6 +885,105 @@ class GlobalEmailConfig(db.Model):
     def effective_web3forms_key(self, app_config: dict) -> str:
         return self.web3forms_key or app_config.get('WEB3FORMS_ACCESS_KEY', '')
 
+    # ── Per-portal MailerSend (Task 4 — v5.6) ────────────────────────────────
+    # Admin Portal credentials (fallback: ADMIN_MAILERSEND_API_KEY env var)
+    _admin_mailersend_api_key = db.Column(
+        'admin_mailersend_api_key', db.Text, default='', nullable=True
+    )
+    admin_sender_name  = db.Column(db.String(200), default='', nullable=True)
+    admin_sender_email = db.Column(db.String(200), default='', nullable=True)
+
+    # Superadmin Portal credentials (fallback: SUPERADMIN_MAILERSEND_API_KEY env var)
+    _superadmin_mailersend_api_key = db.Column(
+        'superadmin_mailersend_api_key', db.Text, default='', nullable=True
+    )
+    superadmin_sender_name  = db.Column(db.String(200), default='', nullable=True)
+    superadmin_sender_email = db.Column(db.String(200), default='', nullable=True)
+
+    @property
+    def admin_mailersend_api_key(self) -> str:
+        return decrypt_secret(self._admin_mailersend_api_key) if self._admin_mailersend_api_key else ''
+
+    @admin_mailersend_api_key.setter
+    def admin_mailersend_api_key(self, value: str):
+        self._admin_mailersend_api_key = encrypt_secret(value) if value else ''
+
+    @property
+    def has_admin_mailersend(self) -> bool:
+        return bool(self._admin_mailersend_api_key)
+
+    @property
+    def superadmin_mailersend_api_key(self) -> str:
+        return decrypt_secret(self._superadmin_mailersend_api_key) if self._superadmin_mailersend_api_key else ''
+
+    @superadmin_mailersend_api_key.setter
+    def superadmin_mailersend_api_key(self, value: str):
+        self._superadmin_mailersend_api_key = encrypt_secret(value) if value else ''
+
+    @property
+    def has_superadmin_mailersend(self) -> bool:
+        return bool(self._superadmin_mailersend_api_key)
+
+    def get_portal_key(self, portal: str) -> str:
+        """
+        Resolve the MailerSend API key for the given portal.
+        portal: 'superadmin' | 'admin' | 'tenant' (default/shared)
+        Priority: DB per-portal key → DB shared key → env per-portal → env shared
+        """
+        import os
+        if portal == 'superadmin':
+            return (
+                self.superadmin_mailersend_api_key
+                or self.mailersend_api_key
+                or os.environ.get('SUPERADMIN_MAILERSEND_API_KEY', '')
+                or os.environ.get('MAILERSEND_API_KEY', '')
+            )
+        if portal == 'admin':
+            return (
+                self.admin_mailersend_api_key
+                or self.mailersend_api_key
+                or os.environ.get('ADMIN_MAILERSEND_API_KEY', '')
+                or os.environ.get('MAILERSEND_API_KEY', '')
+            )
+        # tenant / default
+        return self.mailersend_api_key or os.environ.get('MAILERSEND_API_KEY', '')
+
+    def get_portal_sender_email(self, portal: str) -> str:
+        import os
+        if portal == 'superadmin':
+            return (
+                self.superadmin_sender_email
+                or self.sender_email
+                or os.environ.get('SUPERADMIN_MAIL_FROM', '')
+                or os.environ.get('MAILERSEND_FROM_EMAIL', 'noreply@portfoliocms.app')
+            )
+        if portal == 'admin':
+            return (
+                self.admin_sender_email
+                or self.sender_email
+                or os.environ.get('ADMIN_MAIL_FROM', '')
+                or os.environ.get('MAILERSEND_FROM_EMAIL', 'noreply@portfoliocms.app')
+            )
+        return self.sender_email or os.environ.get('MAILERSEND_FROM_EMAIL', 'noreply@portfoliocms.app')
+
+    def get_portal_sender_name(self, portal: str) -> str:
+        import os
+        if portal == 'superadmin':
+            return (
+                self.superadmin_sender_name
+                or self.sender_name
+                or os.environ.get('SUPERADMIN_MAIL_NAME', '')
+                or os.environ.get('MAILERSEND_FROM_NAME', 'Portfolio CMS')
+            )
+        if portal == 'admin':
+            return (
+                self.admin_sender_name
+                or self.sender_name
+                or os.environ.get('ADMIN_MAIL_NAME', '')
+                or os.environ.get('MAILERSEND_FROM_NAME', 'Portfolio CMS')
+            )
+        return self.sender_name or os.environ.get('MAILERSEND_FROM_NAME', 'Portfolio CMS')
+
     def __repr__(self):
         return f'<GlobalEmailConfig mailersend={"✓" if self.has_mailersend else "✗"}>'
 

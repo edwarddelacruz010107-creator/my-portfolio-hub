@@ -76,21 +76,31 @@ def _recovery_enabled() -> bool:
 # A. Superadmin reset
 # ─────────────────────────────────────────────────────────────────────────────
 
-def initiate_superadmin_reset(submitted_email: str) -> tuple[bool, str]:
+def initiate_superadmin_reset(submitted_email: str, submitted_username: str = '') -> tuple[bool, str]:
     """
     Initiate superadmin OTP reset.
-    Returns (sent: bool, masked_email_or_error: str).
-    Uses generic message to avoid account enumeration.
+    Requires BOTH username AND email to match (anti-enumeration, same standard as tenant flow).
+    Returns (sent: bool, message: str).
     """
     if not _recovery_enabled():
         return False, 'Password recovery is currently disabled.'
 
-    # Always returns generic message regardless of match
-    generic = 'If a superadmin account exists with that email, an OTP has been sent.'
+    # Always returns generic message regardless of match (anti-enumeration)
+    generic = 'If a superadmin account exists with those credentials, an OTP has been sent.'
 
-    user = User.query.filter_by(is_superadmin=True, email=submitted_email.strip().lower()).first()
+    email = submitted_email.strip().lower()
+    uname = (submitted_username or '').strip()
+
+    if not email or not uname:
+        return False, 'Username and email are both required.'
+
+    user = User.query.filter_by(
+        is_superadmin=True,
+        email=email,
+        username=uname,
+    ).first()
     if not user:
-        logger.warning('Superadmin reset: email not found — %s (enumeration suppressed)', submitted_email)
+        logger.warning('Superadmin reset: no match for username=%s email=%s (enumeration suppressed)', uname, email)
         return True, generic  # Lie to prevent enumeration
 
     ip = _get_ip()
@@ -154,14 +164,22 @@ def complete_superadmin_reset(token: str, new_password: str) -> tuple[bool, str]
 # B. Admin (tenant admin user) reset
 # ─────────────────────────────────────────────────────────────────────────────
 
-def initiate_admin_reset(submitted_email: str) -> tuple[bool, str]:
-    """Initiate admin (non-superadmin) OTP reset."""
+def initiate_admin_reset(submitted_email: str, submitted_username: str = '') -> tuple[bool, str]:
+    """
+    Initiate admin (non-superadmin) OTP reset.
+    Requires BOTH username AND email to match the same User row.
+    """
     if not _recovery_enabled():
         return False, 'Password recovery is currently disabled.'
 
-    generic = 'If an account exists with that email, an OTP has been sent.'
+    generic = 'If an account exists with those credentials, an OTP has been sent.'
     email   = submitted_email.strip().lower()
-    user    = User.query.filter_by(email=email, is_superadmin=False).first()
+    uname   = (submitted_username or '').strip()
+
+    if not email or not uname:
+        return False, 'Username and email are both required.'
+
+    user = User.query.filter_by(email=email, username=uname, is_superadmin=False).first()
     if not user:
         return True, generic
 

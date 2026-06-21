@@ -50,7 +50,6 @@ from app.services.manual_billing import (
     save_billing_upload,
     set_default_payment_method,
 )
-from app.services.password_reset_service import verify_admin_otp
 from app.services.tenant_admin import delete_tenant_completely
 from app.utils import is_paymongo_enabled, set_paymongo_enabled
 from app.models import User
@@ -203,89 +202,13 @@ def logout():
 # The old route is now a permanent redirect to the new flow.
 
 
-# ── Superadmin Forgot Password (v3.8) ─────────────────────────────────────────────
-# Completely isolated from the superadmin flow.
-
 @superadmin.route('/forgot-password', methods=['GET', 'POST'])
-def forgot_password_legacy():
-    """Step 1: Superadmin enters email → OTP dispatched."""
-    from flask_login import current_user as _cu
-    if _cu.is_authenticated:
-        if _cu.is_superadmin:
-            return redirect(url_for('superadmin.dashboard'))
-
-    from flask import session as _session
-    if request.method == 'POST':
-        from app.services.password_reset_service import initiate_superadmin_reset
-        email = request.form.get('email', '').strip().lower()
-        if not email:
-            flash('Email address required.', 'danger')
-            return render_template('superadmin/forgot_password_request.html')
-        ok, msg = initiate_superadmin_reset(email)
-        flash(msg, 'info' if ok else 'danger')
-        if ok:
-            _session['_superadmin_pw_reset_email'] = email
-            return redirect(url_for('superadmin.forgot_password_verify'))
-    return render_template('superadmin/forgot_password_request.html')
-
-
-@superadmin.route('/forgot-password/verify', methods=['GET', 'POST'])
-def forgot_password_verify_legacy():
-    """Step 2: OTP verification."""
-    from flask_login import current_user as _cu
-    if _cu.is_authenticated:
-        if _cu.is_superadmin:
-            return redirect(url_for('superadmin.dashboard'))
-
-    from flask import session as _session
-    email = _session.get('_superadmin_pw_reset_email', '')
-    if not email:
-        return redirect(url_for('superadmin.forgot_password_reset'))
-
-    if request.method == 'POST':
-        from app.services.password_reset_service import verify_superadmin_otp
-        raw_otp = request.form.get('otp_code', '').strip()
-        ok, msg, token = verify_superadmin_otp(email, raw_otp)
-        flash(msg, 'success' if ok else 'danger')
-        if ok:
-            _session['_superadmin_pw_reset_token'] = token
-            return redirect(url_for('superadmin.forgot_password_reset'))
-
-    return render_template('superadmin/forgot_password_verify.html', email=email)
-
-
-@superadmin.route('/forgot-password/reset', methods=['GET', 'POST'])
-def forgot_password_reset_legacy():
-    """Step 3: Set new password."""
-    from flask_login import current_user as _cu
-    if _cu.is_authenticated:
-        if _cu.is_superadmin:
-            return redirect(url_for('superadmin.dashboard'))
-
-    from flask import session as _session
-    token = _session.get('_superadmin_pw_reset_token', '')
-    if not token:
-        return redirect(url_for('superadmin.forgot_password_reset'))
-
-    if request.method == 'POST':
-        from app.services.password_reset_service import complete_superadmin_reset
-        pw  = request.form.get('password', '').strip()
-        pw2 = request.form.get('password_confirm', '').strip()
-        if not pw or len(pw) < 8:
-            flash('Password must be at least 8 characters.', 'danger')
-            return render_template('superadmin/forgot_password_reset.html')
-        if pw != pw2:
-            flash('Passwords do not match.', 'danger')
-            return render_template('superadmin/forgot_password_reset.html')
-        ok, msg = complete_superadmin_reset(token, pw)
-        flash(msg, 'success' if ok else 'danger')
-        if ok:
-            _session.pop('_superadmin_pw_reset_email', None)
-            _session.pop('_superadmin_pw_reset_token', None)
-            return redirect(url_for('superadmin.login'))
-
-    return render_template('superadmin/forgot_password_reset.html')
-
+def forgot_password():
+    """
+    Legacy entry point — redirects to the new DB-backed flow (HTTP 301).
+    Kept so any existing bookmarks or links continue to work.
+    """
+    return redirect(url_for('superadmin.forgot_password_request'), code=301)
 
 
 # ── Dashboard ─────────────────────────────────────────────────────────────────
@@ -2059,6 +1982,14 @@ def email_settings():
         otp_ttl_raw        = request.form.get('otp_expiry_minutes', '10').strip()
         recovery_on        = request.form.get('recovery_enabled') == 'on'
 
+        # Per-portal fields (v5.6)
+        admin_key          = request.form.get('admin_mailersend_api_key', '').strip()
+        admin_sender_email = request.form.get('admin_sender_email', '').strip().lower()
+        admin_sender_name  = request.form.get('admin_sender_name', '').strip()
+        sa_key             = request.form.get('superadmin_mailersend_api_key', '').strip()
+        sa_sender_email    = request.form.get('superadmin_sender_email', '').strip().lower()
+        sa_sender_name     = request.form.get('superadmin_sender_name', '').strip()
+
         try:
             otp_ttl = max(1, min(60, int(otp_ttl_raw)))
         except (ValueError, TypeError):
@@ -2076,8 +2007,18 @@ def email_settings():
                 current_user.username, len(new_mailersend_key),
             )
 
+        # Per-portal keys (only update when a new value is submitted)
+        if admin_key:
+            cfg.admin_mailersend_api_key = admin_key
+        if sa_key:
+            cfg.superadmin_mailersend_api_key = sa_key
+
         cfg.sender_name        = sender_name  or cfg.sender_name
         cfg.sender_email       = sender_email or cfg.sender_email
+        cfg.admin_sender_email = admin_sender_email or cfg.admin_sender_email
+        cfg.admin_sender_name  = admin_sender_name  or cfg.admin_sender_name
+        cfg.superadmin_sender_email = sa_sender_email or cfg.superadmin_sender_email
+        cfg.superadmin_sender_name  = sa_sender_name  or cfg.superadmin_sender_name
         cfg.otp_expiry_minutes = otp_ttl
         cfg.recovery_enabled   = recovery_on
         cfg.updated_by         = current_user.username
@@ -2100,17 +2041,18 @@ def email_settings():
 @limiter.limit('3 per minute', error_message='Too many requests. Please wait a moment.')
 @limiter.limit('5 per hour', error_message='Too many requests. Please try again later.')
 def forgot_password_request():
-    """Step 1: email submission → OTP dispatch."""
+    """Step 1: username + email submission → OTP dispatch (v5.6: username required)."""
     if current_user.is_authenticated:
         return redirect(url_for('superadmin.dashboard'))
 
     if request.method == 'POST':
         from app.services.password_reset_service import initiate_superadmin_reset
-        email = request.form.get('email', '').strip().lower()
-        if not email:
-            flash('Email address required.', 'danger')
+        email    = request.form.get('email', '').strip().lower()
+        username = request.form.get('username', '').strip()
+        if not email or not username:
+            flash('Username and email are both required.', 'danger')
             return render_template('superadmin/forgot_password_request.html')
-        ok, msg = initiate_superadmin_reset(email)
+        ok, msg = initiate_superadmin_reset(email, username)
         flash(msg, 'info' if ok else 'danger')
         if ok:
             from flask import session as _session

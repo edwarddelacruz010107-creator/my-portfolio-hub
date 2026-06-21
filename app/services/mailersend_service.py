@@ -40,13 +40,16 @@ _TIMEOUT: int = 15  # seconds — passed to MailerSend SDK where supported
 # Internal key / sender resolution  (server-side only)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _get_mailersend_key() -> str:
+def _get_mailersend_key(portal: str = 'tenant') -> str:
     """
-    Resolve the active MailerSend API key.
+    Resolve the active MailerSend API key for the specified portal.
 
-    Priority:
-      1. GlobalEmailConfig.mailersend_api_key (DB, Fernet-encrypted)
-      2. MAILERSEND_API_KEY environment variable
+    portal: 'superadmin' | 'admin' | 'tenant'
+    Priority per portal:
+      1. GlobalEmailConfig.<portal>_mailersend_api_key (DB, Fernet-encrypted)
+      2. GlobalEmailConfig.mailersend_api_key (shared DB key)
+      3. <PORTAL>_MAILERSEND_API_KEY env var
+      4. MAILERSEND_API_KEY env var (shared)
 
     The key is *never* written to any template context or JSON response.
 
@@ -56,17 +59,25 @@ def _get_mailersend_key() -> str:
     try:
         from app.models.portfolio import GlobalEmailConfig
         cfg = GlobalEmailConfig.get()
-        if cfg.mailersend_api_key:
-            return cfg.mailersend_api_key
+        key = cfg.get_portal_key(portal)
+        if key:
+            return key
     except Exception as exc:
         logger.debug('mailersend_service: could not load GlobalEmailConfig: %s', exc)
+    # Env fallback (already handled inside get_portal_key when cfg loads,
+    # but if the DB is down entirely, resolve directly from env)
+    import os
+    if portal == 'superadmin':
+        return os.environ.get('SUPERADMIN_MAILERSEND_API_KEY', '') or os.environ.get('MAILERSEND_API_KEY', '').strip()
+    if portal == 'admin':
+        return os.environ.get('ADMIN_MAILERSEND_API_KEY', '') or os.environ.get('MAILERSEND_API_KEY', '').strip()
     return os.environ.get('MAILERSEND_API_KEY', '').strip()
 
 
 # Public alias used by app startup diagnostics
 def get_mailersend_key() -> str:
-    """Return the active MailerSend API key (DB or env). Empty string if not set."""
-    return _get_mailersend_key()
+    """Return the active shared MailerSend API key (DB or env). Empty string if not set."""
+    return _get_mailersend_key('tenant')
 
 
 def send_email_with_retry(
@@ -165,35 +176,33 @@ def init_email_services(app) -> None:
         app.logger.info('  Sender: %s <%s>', from_name, from_email)
 
 
-def _get_sender_name(cfg=None) -> str:
+def _get_sender_name(cfg=None, portal: str = 'tenant') -> str:
     """
-    Resolve the display name used in the From header.
+    Resolve the display name used in the From header for the given portal.
 
-    Priority: DB config → MAILERSEND_FROM_NAME env → safe default.
+    Priority: DB per-portal config → DB shared config → env per-portal → env shared → safe default.
     """
     try:
         if cfg is None:
             from app.models.portfolio import GlobalEmailConfig
             cfg = GlobalEmailConfig.get()
-        if cfg.sender_name:
-            return cfg.sender_name
+        return cfg.get_portal_sender_name(portal) or os.environ.get('MAILERSEND_FROM_NAME', 'Portfolio CMS')
     except Exception:
         pass
     return os.environ.get('MAILERSEND_FROM_NAME', 'Portfolio CMS')
 
 
-def _get_sender_email(cfg=None) -> str:
+def _get_sender_email(cfg=None, portal: str = 'tenant') -> str:
     """
-    Resolve the From email address (must be a MailerSend-verified domain).
+    Resolve the From email address for the given portal (must be a MailerSend-verified domain).
 
-    Priority: DB config → MAILERSEND_FROM_EMAIL env → safe default.
+    Priority: DB per-portal config → DB shared config → env per-portal → env shared → safe default.
     """
     try:
         if cfg is None:
             from app.models.portfolio import GlobalEmailConfig
             cfg = GlobalEmailConfig.get()
-        if cfg.sender_email:
-            return cfg.sender_email
+        return cfg.get_portal_sender_email(portal) or os.environ.get('MAILERSEND_FROM_EMAIL', 'noreply@portfoliocms.app')
     except Exception:
         pass
     return os.environ.get('MAILERSEND_FROM_EMAIL', 'noreply@portfoliocms.app')
@@ -210,9 +219,13 @@ def send_email(
     html: Optional[str] = None,
     reply_to: Optional[str] = None,
     to_name: Optional[str] = None,
+    portal: str = 'tenant',
 ) -> tuple[bool, str]:
     """
     Send a single transactional email via the MailerSend SDK.
+
+    portal: 'superadmin' | 'admin' | 'tenant'
+    Uses the portal-specific API key, sender email, and sender name.
 
     The API key is resolved server-side and never touches any template
     or client-facing response.
@@ -224,13 +237,14 @@ def send_email(
         html:      Optional HTML body.
         reply_to:  Optional reply-to address.
         to_name:   Optional display name for the recipient.
+        portal:    Which portal context is sending ('superadmin'|'admin'|'tenant').
 
     Returns:
         Tuple of (success: bool, message_id_or_error: str).
     """
-    api_key = _get_mailersend_key()
+    api_key = _get_mailersend_key(portal)
     if not api_key:
-        logger.error('mailersend_service: MAILERSEND_API_KEY is not configured.')
+        logger.error('mailersend_service: MAILERSEND_API_KEY is not configured for portal=%s.', portal)
         return False, 'MailerSend API key not configured.'
 
     try:
@@ -248,7 +262,7 @@ def send_email(
 
         builder = (
             EmailBuilder()
-            .from_email(_get_sender_email(), _get_sender_name())
+            .from_email(_get_sender_email(portal=portal), _get_sender_name(portal=portal))
             .to(to, to_name or '')
             .subject(subject)
             .text(text)
@@ -270,36 +284,36 @@ def send_email(
                 or response.get('id', 'unknown')
             )
             logger.info(
-                'MailerSend: sent <%s> to %s (message_id=%s)',
-                subject[:60], to, msg_id,
+                'MailerSend[%s]: sent <%s> to %s (message_id=%s)',
+                portal, subject[:60], to, msg_id,
             )
             return True, str(msg_id)
 
         # Non-2xx but no SDK exception raised
         err = f'HTTP {response.status_code}'
         logger.error(
-            'MailerSend: unexpected status %s sending <%s> to %s',
-            response.status_code, subject[:60], to,
+            'MailerSend[%s]: unexpected status %s sending <%s> to %s',
+            portal, response.status_code, subject[:60], to,
         )
         return False, err
 
     except AuthenticationError as exc:
-        logger.error('MailerSend: authentication failed — check MAILERSEND_API_KEY: %s', exc)
+        logger.error('MailerSend[%s]: authentication failed — check API key: %s', portal, exc)
         return False, 'Authentication failed. Verify MAILERSEND_API_KEY.'
     except BadRequestError as exc:
-        logger.error('MailerSend: bad request sending to %s: %s', to, exc)
+        logger.error('MailerSend[%s]: bad request sending to %s: %s', portal, to, exc)
         return False, f'Bad request: {exc}'
     except RateLimitExceeded as exc:
-        logger.warning('MailerSend: rate limit exceeded sending to %s: %s', to, exc)
+        logger.warning('MailerSend[%s]: rate limit exceeded sending to %s: %s', portal, to, exc)
         return False, 'Rate limit exceeded. Will retry via SMTP fallback.'
     except ServerError as exc:
-        logger.error('MailerSend: server error sending to %s: %s', to, exc)
+        logger.error('MailerSend[%s]: server error sending to %s: %s', portal, to, exc)
         return False, f'MailerSend server error: {exc}'
     except MailerSendError as exc:
-        logger.error('MailerSend: SDK error sending to %s: %s', to, exc)
+        logger.error('MailerSend[%s]: SDK error sending to %s: %s', portal, to, exc)
         return False, str(exc)
     except Exception as exc:
-        logger.exception('MailerSend: unexpected error sending to %s: %s', to, exc)
+        logger.exception('MailerSend[%s]: unexpected error sending to %s: %s', portal, to, exc)
         return False, str(exc)
 
 
@@ -395,7 +409,7 @@ def send_otp_email(
     ttl_minutes: int = 10,
 ) -> bool:
     """
-    Send an OTP password-reset code via MailerSend (SMTP fallback on failure).
+    Send an OTP password-reset code via MailerSend using the correct portal credentials.
 
     Args:
         recipient_email: Destination address.
@@ -406,8 +420,12 @@ def send_otp_email(
         ttl_minutes:     OTP validity window shown in the email body.
 
     Returns:
-        True if the email was delivered (MailerSend or SMTP fallback).
+        True if the email was delivered.
     """
+    # Map user_type → portal so portal-specific keys/senders are used
+    portal_map = {'superadmin': 'superadmin', 'admin': 'admin', 'tenant': 'tenant'}
+    portal = portal_map.get(user_type, 'tenant')
+
     now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
     role_label = user_type.replace('_', ' ').title()
 
@@ -444,11 +462,11 @@ def send_otp_email(
   </p>
 </div>'''
 
-    ok, _ = send_email(recipient_email, subject, text, html=html)
+    ok, _ = send_email(recipient_email, subject, text, html=html, portal=portal)
     if ok:
         return True
     logger.warning(
-        'MailerSend OTP send failed; falling back to SMTP for %s', recipient_email
+        'MailerSend OTP send failed for %s (portal=%s)', recipient_email, portal
     )
     return _smtp_fallback(recipient_email, subject, text)
 

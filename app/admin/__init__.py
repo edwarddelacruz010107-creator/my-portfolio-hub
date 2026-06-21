@@ -1795,7 +1795,7 @@ def show_new_backup_codes():
 
 @admin.route('/forgot-password', methods=['GET', 'POST'])
 def forgot_password():
-    """Step 1: Admin enters email → OTP dispatched."""
+    """Step 1: Admin enters username + email — OTP dispatched (v5.6: username required)."""
     from flask_login import current_user as _cu
     if _cu.is_authenticated:
         return redirect(url_for('admin.dashboard'))
@@ -1803,11 +1803,12 @@ def forgot_password():
     from flask import session as _session
     if request.method == 'POST':
         from app.services.password_reset_service import initiate_admin_reset
-        email = request.form.get('email', '').strip().lower()
-        if not email:
-            flash('Email address required.', 'danger')
+        email    = request.form.get('email', '').strip().lower()
+        username = request.form.get('username', '').strip()
+        if not email or not username:
+            flash('Username and email are both required.', 'danger')
             return render_template('admin/forgot_password_request.html')
-        ok, msg = initiate_admin_reset(email)
+        ok, msg = initiate_admin_reset(email, username)
         flash(msg, 'info' if ok else 'danger')
         if ok:
             _session['_admin_pw_reset_email'] = email
