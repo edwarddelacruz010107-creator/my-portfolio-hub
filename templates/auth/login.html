@@ -293,7 +293,7 @@
                 <button type="submit" class="login-btn" id="submitBtn">Sign In</button>
             </div>
           <div class="auth-footer-links" style="text-align:center;margin-top:1rem;">
-    <a href="{{ forgot_password_url }}" class="auth-link" style="font-size:0.875rem;opacity:0.75;">
+    <a href="{{ forgot_password_url | default(url_for('auth.forgot_password')) }}" class="auth-link" style="font-size:0.875rem;opacity:0.75;">
       Forgot your password?
     </a>
   </div>
