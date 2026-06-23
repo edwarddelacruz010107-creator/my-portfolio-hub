@@ -401,8 +401,8 @@ def _handle_login(require_admin: bool = False, require_superadmin: bool = False,
 
 
 @auth.route('/login', methods=['GET', 'POST'])
-@limiter.limit('10 per minute')
-@limiter.limit('30 per hour')
+@limiter.limit('20 per minute')
+@limiter.limit('100 per hour')
 def login():
     """
     Fallback /auth/login for Flask-Login @login_required redirects and direct
@@ -469,7 +469,7 @@ def login():
 
 
 @auth.route('/login/2fa', methods=['GET', 'POST'])
-@limiter.limit('10 per minute')
+@limiter.limit('20 per minute')
 def verify_2fa():
     """Step 2 of login: verify TOTP or backup code."""
     user_id = session.get('_2fa_user_id')

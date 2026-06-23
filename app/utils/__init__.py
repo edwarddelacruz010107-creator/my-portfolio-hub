@@ -255,6 +255,7 @@ def save_image(
     subfolder: str,
     max_size: tuple[int, int] | None = None,
     allowed_extensions: set[str] | None = None,
+    quality: int = 85,
 ) -> tuple[str | None, str | None]:
     """
     Validate and save an uploaded image.
@@ -277,7 +278,16 @@ def save_image(
     ext = original_name.rsplit(".", 1)[-1].lower() if "." in original_name else ""
 
     if ext not in allowed:
-        return None, f"File type '.{ext}' is not allowed. Accepted: {', '.join(sorted(allowed))}."
+        return None, f"File type '.{ext}' is not allowed. Accepted: {', '.join(sorted(allowed))}."""
+
+    # HIGH-08: Magic-byte validation before any disk write
+    file_storage.stream.seek(0)
+    file_bytes = file_storage.stream.read(32)
+    file_storage.stream.seek(0)
+    ok, magic_err = validate_magic_bytes(file_bytes, ext)
+    if not ok:
+        return None, f"File content validation failed: {magic_err}"
+
 
     unique_name = f"{uuid.uuid4().hex}.{ext}"
 
@@ -292,7 +302,7 @@ def save_image(
                 from PIL import Image as PILImage
                 img = PILImage.open(file_storage.stream)
                 img.thumbnail(max_size, PILImage.LANCZOS)
-                img.save(dest_path)
+                img.save(dest_path, quality=quality)
             except ImportError:
                 # Pillow not installed — save as-is
                 file_storage.stream.seek(0)

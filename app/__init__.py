@@ -43,6 +43,8 @@ except ImportError:
     _HAS_APSCHEDULER = False
 from config import config
 from app.tenant_security import TenantGuard, RESERVED_SLUGS
+from app.heartbeat import heartbeat_bp
+from app.heartbeat.health_email import health_email_bp 
 
 # ── Extension singletons ──────────────────────────────────────────────────────
 db            = SQLAlchemy()
@@ -244,6 +246,10 @@ def create_app(config_name: str = 'default') -> Flask:
     app.config.from_object(config[config_name])
     config[config_name].init_app(app)
 
+    # CRIT-01/02/03: Validate environment secrets at startup
+    from app.startup_validation import validate_startup_env
+    validate_startup_env(app)
+
     app.wsgi_app = ProxyFix(
         app.wsgi_app,
         x_for=1,
@@ -258,6 +264,8 @@ def create_app(config_name: str = 'default') -> Flask:
             force_https=True,
             session_cookie_secure=True,
             strict_transport_security=True,
+            content_security_policy=csp,
+            content_security_policy_nonce_in=["script-src"],
         )
 
     logging.basicConfig(
@@ -474,6 +482,9 @@ def create_app(config_name: str = 'default') -> Flask:
     # tenant_bp MUST be last — its /<tenant_slug> prefix is a wildcard
     app.register_blueprint(tenant_bp)
 
+    app.register_blueprint(heartbeat_bp)
+    app.register_blueprint(health_email_bp)
+
     # ── Custom Jinja2 filters (v3.8) ─────────────────────────────────────────
     from markupsafe import Markup, escape as _escape
 
@@ -518,29 +529,6 @@ def create_app(config_name: str = 'default') -> Flask:
         return redirect(url_for('root'), 301)
 
 
-    # ── Debug: asset/environment diagnostics ─────────────────────────────────
-    @app.route('/debug/assets')
-    def debug_assets():
-        """
-        Temporary production debugging endpoint.
-        Returns asset load status, static folder path, and environment info.
-        Remove or restrict this endpoint after debugging is complete.
-        """
-        import os as _os
-        from flask import jsonify as _jsonify
-        static_folder = app.static_folder or ''
-        css_path = _os.path.join(static_folder, 'css', 'main.css')
-        js_path  = _os.path.join(static_folder, 'js', 'main.js')
-        return _jsonify({
-            'css_loaded':      _os.path.isfile(css_path),
-            'js_loaded':       _os.path.isfile(js_path),
-            'static_folder':   static_folder,
-            'static_exists':   _os.path.isdir(static_folder),
-            'environment':     app.config.get('ENV', _os.environ.get('FLASK_ENV', 'unknown')),
-            'debug_mode':      app.debug,
-            'css_size_bytes':  _os.path.getsize(css_path) if _os.path.isfile(css_path) else None,
-            'js_size_bytes':   _os.path.getsize(js_path)  if _os.path.isfile(js_path)  else None,
-        })
 
     # ── Context processors ────────────────────────────────────────────────────
     from app.context_processors import register_context_processors

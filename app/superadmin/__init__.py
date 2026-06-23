@@ -2074,7 +2074,7 @@ def forgot_password_verify():
     email = _session.get('_pw_reset_email', '')
     if not email:
         return redirect(url_for('superadmin.forgot_password_request'))
-
+ 
     if request.method == 'POST':
         from app.services.password_reset_service import verify_superadmin_otp
         raw_otp = request.form.get('otp_code', '').strip()
@@ -2083,11 +2083,17 @@ def forgot_password_verify():
         if ok:
             _session['_pw_reset_token'] = token
             return redirect(url_for('superadmin.forgot_password_reset'))
-
-    return render_template('superadmin/forgot_password.html')  # reuse existing OTP entry template
-
-
+ 
+    # FIX: was 'superadmin/forgot_password.html' — wrong template, bad resend link
+    return render_template('superadmin/forgot_password_verify.html')
+ 
+ 
+# ── CHANGE 2: Full replacement of forgot_password_reset with rate limiter ──
+ 
+ 
 @superadmin.route('/forgot-password/reset', methods=['GET', 'POST'])
+@limiter.limit('5 per minute', error_message='Too many requests. Please wait a moment.')
+@limiter.limit('10 per hour', error_message='Too many requests. Please try again later.')
 def forgot_password_reset():
     """Step 3: new password form."""
     if current_user.is_authenticated:
@@ -2096,7 +2102,7 @@ def forgot_password_reset():
     token = _session.get('_pw_reset_token', '')
     if not token:
         return redirect(url_for('superadmin.forgot_password_request'))
-
+ 
     if request.method == 'POST':
         from app.services.password_reset_service import complete_superadmin_reset
         pw  = request.form.get('password', '').strip()
@@ -2114,7 +2120,7 @@ def forgot_password_reset():
             _session.pop('_pw_reset_token', None)
             _session.pop('_pw_reset_type', None)
             return redirect(url_for('superadmin.login'))
-
+ 
     return render_template('superadmin/forgot_password_reset.html')
 
 

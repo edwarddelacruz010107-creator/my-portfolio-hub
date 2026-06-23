@@ -71,6 +71,8 @@ from app.tenant_security import (
     resolve_active_tenant, stamp_session_tenant,
     RESERVED_SLUGS, session_tenant_valid,
 )
+from app import limiter  # Flask-Limiter instance
+from app.forms import ForgotPasswordForm  # Flask-WTF form for CSRF protection
 
 logger = logging.getLogger(__name__)
 admin  = Blueprint('admin', __name__)
@@ -1794,6 +1796,8 @@ def show_new_backup_codes():
 # Completely isolated from the superadmin flow.
 
 @admin.route('/forgot-password', methods=['GET', 'POST'])
+@limiter.limit("10 per minute")
+@limiter.limit("100 per hour")
 def forgot_password():
     """Step 1: Admin enters username + email — OTP dispatched (v5.6: username required)."""
     from flask_login import current_user as _cu
@@ -1801,22 +1805,29 @@ def forgot_password():
         return redirect(url_for('admin.dashboard'))
 
     from flask import session as _session
+    form = ForgotPasswordForm()
     if request.method == 'POST':
+        if not form.validate_on_submit():
+            flash('Form validation failed. Please try again.', 'danger')
+            return render_template('admin/forgot_password_request.html', form=form)
         from app.services.password_reset_service import initiate_admin_reset
         email    = request.form.get('email', '').strip().lower()
         username = request.form.get('username', '').strip()
         if not email or not username:
             flash('Username and email are both required.', 'danger')
-            return render_template('admin/forgot_password_request.html')
+            return render_template('admin/forgot_password_request.html', form=form)
+        
         ok, msg = initiate_admin_reset(email, username)
         flash(msg, 'info' if ok else 'danger')
         if ok:
             _session['_admin_pw_reset_email'] = email
             return redirect(url_for('admin.forgot_password_verify'))
-    return render_template('admin/forgot_password_request.html')
+    return render_template('admin/forgot_password_request.html', form=form)
 
 
 @admin.route('/forgot-password/verify', methods=['GET', 'POST'])
+@limiter.limit("10 per minute")
+@limiter.limit("20 per hour")
 def forgot_password_verify():
     """Step 2: OTP verification."""
     from flask_login import current_user as _cu
@@ -1841,6 +1852,8 @@ def forgot_password_verify():
 
 
 @admin.route('/forgot-password/reset', methods=['GET', 'POST'])
+@limiter.limit("5 per minute")
+@limiter.limit("10 per hour")
 def forgot_password_reset():
     """Step 3: Set new password."""
     from flask_login import current_user as _cu
@@ -1904,7 +1917,11 @@ def notifications_mark_all_read():
 def notification_mark_read(notif_id):
     from app.services.notification_service import mark_notification_read
     mark_notification_read(notif_id, current_user.tenant_id)
-    return redirect(request.referrer or url_for('admin.notifications'))
+    # HIGH-07: validate referrer to prevent open redirect
+    from app.auth import _is_safe_url
+    referrer = request.referrer
+    safe_target = referrer if (referrer and _is_safe_url(referrer)) else url_for('admin.notifications')
+    return redirect(safe_target)
 
 
 

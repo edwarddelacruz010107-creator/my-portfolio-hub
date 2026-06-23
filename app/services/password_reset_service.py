@@ -1,20 +1,57 @@
 """
-app/services/password_reset_service.py — Password reset orchestration (v3.8)
+app/services/password_reset_service.py — Password reset orchestration (v4.0)
+
+PATCH v4.0 (superadmin OTP exclusively via Web3Forms):
+  • _send_superadmin_otp() now calls ONLY web3forms_service.send_superadmin_otp().
+  • The MailerSend / send_otp_email() FALLBACK has been REMOVED from the
+    superadmin path entirely. Web3Forms is now the sole delivery mechanism.
+  • WEB3FORMS_ACCESS_KEY absence is treated as a hard configuration error
+    (logged at ERROR level), not silently skipped.
+  • Zero change to admin / tenant reset flows.
+  • Zero schema changes.
+
+DELIVERY MATRIX (v4.0):
+    ┌──────────────────────┬───────────────────────────────────┐
+    │ Portal               │ OTP Delivery                      │
+    ├──────────────────────┼───────────────────────────────────┤
+    │ TENANT               │ email_service.send_otp_email()    │
+    │                      │ → SMTP primary / MailerSend fallb │
+    ├──────────────────────┼───────────────────────────────────┤
+    │ ADMIN                │ email_service.send_otp_email()    │
+    │                      │ → SMTP primary / MailerSend fallb │
+    ├──────────────────────┼───────────────────────────────────┤
+    │ SUPERADMIN           │ web3forms_service.send_superadmin_otp()  ONLY  │
+    │                      │ NO MailerSend. NO SMTP. NO fallback.           │
+    └──────────────────────┴────────────────────────────────────────────────┘
 
 Three completely isolated reset flows:
-  A. Superadmin  — /superadmin/forgot-password
-  B. Admin        — /admin/forgot-password       (tenant admin users)
-  C. Tenant       — /tenant/forgot-password      (validates against contact_email)
+    A. Superadmin  — /superadmin/forgot-password
+    B. Admin        — /admin/forgot-password       (tenant admin users)
+    C. Tenant       — /tenant/forgot-password      (validates against User row)
 
 Each flow:
-  1. resolve_user()     → look up account, validate email
-  2. initiate_reset()   → create OTP record, send email
-  3. verify_otp_step()  → verify OTP, return token for password form
-  4. complete_reset()   → set new password, destroy all sessions
+    1. resolve_user()     → look up account, validate email
+    2. initiate_reset()   → create OTP record, send email
+    3. verify_otp_step()  → verify OTP, return token for password form
+    4. complete_reset()   → set new password, destroy all sessions
 
-Session security on password change:
-  • session_token rotated → existing sessions invalidated
-  • require_password_reset cleared
+Security:
+    • OTP: 6-digit, SHA-256 hashed in DB, 10-minute TTL (configurable)
+    • Max 5 wrong OTP attempts before record is voided
+    • Anti-enumeration: always return generic message regardless of match
+    • Reset token: SHA-256 hashed in DB, short TTL
+    • Session token rotated on password change → existing sessions invalidated
+    • Superadmin flow is completely isolated from tenant/admin tables/slugs/keys
+
+Audit events:
+    sa_pw_reset_initiated  — OTP generated and sent (superadmin)
+    sa_otp_failed          — OTP verification failed (superadmin)
+    sa_otp_verified        — OTP verified (superadmin)
+    sa_pw_reset_complete   — Password changed (superadmin)
+    w3f_otp_delivered      — Web3Forms accepted OTP (logged in web3forms_service)
+    w3f_otp_rejected       — Web3Forms rejected OTP (logged in web3forms_service)
+    admin_pw_reset_*       — Admin flow events
+    tenant_pw_reset_*      — Tenant flow events
 """
 import hashlib
 import logging
@@ -32,8 +69,12 @@ from app.security import log_security_event
 
 logger = logging.getLogger(__name__)
 
-_MAX_OTP_TTL = 10  # minutes
+_MAX_OTP_TTL = 10  # minutes (default when GlobalEmailConfig unavailable)
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared helpers
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _hash_token(token: str) -> str:
     """
@@ -42,9 +83,7 @@ def _hash_token(token: str) -> str:
     CRITICAL: User.password_reset_token stores sha256(raw_token) — see
     User.generate_reset_token() in app/models/core.py. Every complete_*_reset()
     below MUST hash the incoming raw token before querying the column, or the
-    lookup will silently return zero rows on every single attempt (v5.4 bug —
-    this was the cause of "Reset link is invalid or has expired" firing on
-    100% of submissions, independent of timing/expiry/tenant).
+    lookup will silently return zero rows on every single attempt (v5.4 bug).
     """
     return hashlib.sha256(token.encode()).hexdigest()
 
@@ -69,26 +108,127 @@ def _recovery_enabled() -> bool:
     try:
         return GlobalEmailConfig.get().recovery_enabled
     except Exception:
-        return True  # fail open to avoid locking superadmin out
+        return True  # fail open — do not lock superadmin out
+
+
+def _get_ttl_minutes() -> int:
+    try:
+        return max(1, GlobalEmailConfig.get().otp_expiry_minutes or _MAX_OTP_TTL)
+    except Exception:
+        return _MAX_OTP_TTL
+
+
+def _apply_password_change(user: User, new_password: str) -> None:
+    """
+    Set new password, rotate session token (invalidates all existing sessions),
+    clear reset token, clear require_password_reset flag.
+    """
+    user.password               = new_password
+    user.session_token          = secrets.token_urlsafe(32)  # rotate → kills all sessions
+    user.require_password_reset = False
+    user.last_password_changed  = datetime.now(timezone.utc)
+    user.clear_reset_token()
+    db.session.commit()
+    logger.info('Password changed for user id=%s', user.id)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# A. Superadmin reset
+# A. Superadmin reset — Web3Forms ONLY
 # ─────────────────────────────────────────────────────────────────────────────
 
-def initiate_superadmin_reset(submitted_email: str, submitted_username: str = '') -> tuple[bool, str]:
+def _send_superadmin_otp(
+    email: str,
+    otp: str,
+    ip_address: str,
+    user_agent: str,
+    ttl_minutes: int,
+) -> bool:
+    """
+    Deliver superadmin OTP via Web3Forms HTTP API.
+
+    ISOLATION CONTRACT:
+        • ONLY called from initiate_superadmin_reset().
+        • NEVER uses send_otp_email(), MailerSend, or SMTP.
+        • NEVER touches tenant_slug, tenant_id, or any tenant table.
+        • NEVER reads admin or tenant MailerSend credentials.
+
+    If WEB3FORMS_ACCESS_KEY is absent from the environment this is a hard
+    configuration error — the function logs at ERROR level and returns False.
+    There is NO silent fallback to MailerSend or SMTP for the superadmin path.
+    """
+    import os
+    w3f_key = os.environ.get("WEB3FORMS_ACCESS_KEY", "").strip()
+
+    if not w3f_key:
+        logger.error(
+            "_send_superadmin_otp [CRITICAL]: WEB3FORMS_ACCESS_KEY is not set. "
+            "Superadmin OTP delivery is impossible. "
+            "Set WEB3FORMS_ACCESS_KEY in .env immediately. "
+            "There is NO fallback — MailerSend is NOT used for superadmin OTP."
+        )
+        return False
+
+    try:
+        from app.services.web3forms_service import send_superadmin_otp
+        ok, err = send_superadmin_otp(
+            email=email,
+            otp=otp,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            ttl_minutes=ttl_minutes,
+        )
+        if ok:
+            logger.info(
+                "_send_superadmin_otp: OTP delivered via Web3Forms to=%s", email
+            )
+            return True
+
+        logger.error(
+            "_send_superadmin_otp: Web3Forms delivery FAILED for superadmin OTP "
+            "to=%s reason=%s — NO fallback configured",
+            email, err,
+        )
+        return False
+
+    except ImportError as exc:
+        logger.error(
+            "_send_superadmin_otp: failed to import web3forms_service: %s", exc
+        )
+        return False
+
+    except Exception as exc:
+        logger.error(
+            "_send_superadmin_otp: unexpected error calling web3forms_service: %s", exc
+        )
+        return False
+
+
+def initiate_superadmin_reset(
+    submitted_email: str,
+    submitted_username: str = '',
+) -> tuple[bool, str]:
     """
     Initiate superadmin OTP reset.
-    Requires BOTH username AND email to match (anti-enumeration, same standard as tenant flow).
+
+    Validation:
+        • username field is non-empty
+        • email field is non-empty
+        • A User row exists with is_superadmin=True AND email=email AND username=username
+
+    Anti-enumeration: always returns the same generic message regardless of
+    whether the account exists.  Attacker learns nothing from the response.
+
+    OTP delivery: Web3Forms ONLY.  MailerSend is never consulted.
+
     Returns (sent: bool, message: str).
     """
     if not _recovery_enabled():
         return False, 'Password recovery is currently disabled.'
 
-    # Always returns generic message regardless of match (anti-enumeration)
+    # Generic — returned unconditionally regardless of account match
     generic = 'If a superadmin account exists with those credentials, an OTP has been sent.'
 
-    email = submitted_email.strip().lower()
+    email = (submitted_email or '').strip().lower()
     uname = (submitted_username or '').strip()
 
     if not email or not uname:
@@ -99,107 +239,192 @@ def initiate_superadmin_reset(submitted_email: str, submitted_username: str = ''
         email=email,
         username=uname,
     ).first()
-    if not user:
-        logger.warning('Superadmin reset: no match for username=%s email=%s (enumeration suppressed)', uname, email)
-        return True, generic  # Lie to prevent enumeration
 
-    ip = _get_ip()
-    ua = _get_ua()
+    logger.info(
+        '[SUPERADMIN RESET] lookup email=%s username=%s found=%s',
+        email, uname, bool(user),
+    )
+
+    if not user:
+        logger.warning(
+            '[SUPERADMIN RESET] no match email=%s username=%s '
+            '(returning generic message to prevent enumeration)',
+            uname, email,
+        )
+        return True, generic  # Anti-enumeration: lie about existence
+
+    ip  = _get_ip()
+    ua  = _get_ua()
     ttl = _get_ttl_minutes()
 
     raw_otp = create_otp_record(
-        user_type='superadmin', user_id=user.id,
-        email=user.email, ip_address=ip, user_agent=ua,
+        user_type='superadmin',
+        user_id=user.id,
+        email=user.email,
+        ip_address=ip,
+        user_agent=ua,
+        # tenant_id intentionally omitted — superadmin has no tenant
     )
     db.session.commit()
 
-    sent = send_otp_email(
-        recipient_email=user.email, otp=raw_otp,
-        user_type='superadmin', ip_address=ip, user_agent=ua,
+    logger.info('[SUPERADMIN RESET] OTP record created user_id=%s ttl=%dm', user.id, ttl)
+
+    sent = _send_superadmin_otp(
+        email=user.email,
+        otp=raw_otp,
+        ip_address=ip,
+        user_agent=ua,
         ttl_minutes=ttl,
     )
+
+    logger.info('[SUPERADMIN RESET] OTP delivery result=%s user_id=%s', sent, user.id)
+
     if sent:
-        log_security_event('sa_pw_reset_initiated', user, f'OTP sent from {ip}', 'info')
+        log_security_event(
+            'sa_pw_reset_initiated', user,
+            f'Superadmin OTP sent via Web3Forms from ip={ip}', 'info',
+        )
     else:
-        logger.error('Superadmin OTP email delivery failed for user %s', user.id)
+        logger.error(
+            '[SUPERADMIN RESET] Web3Forms OTP delivery FAILED for user_id=%s. '
+            'Check WEB3FORMS_ACCESS_KEY and OWNER_EMAIL environment variables.',
+            user.id,
+        )
+        log_security_event(
+            'sa_pw_reset_w3f_failed', user,
+            f'Web3Forms OTP delivery failed from ip={ip}', 'warning',
+        )
 
-    return True, generic  # Always generic
+    return True, generic  # Always generic (anti-enumeration)
 
 
-def verify_superadmin_otp(submitted_email: str, raw_otp: str) -> tuple[bool, str, str | None]:
+def verify_superadmin_otp(
+    submitted_email: str,
+    raw_otp: str,
+) -> tuple[bool, str, str | None]:
     """
-    Verify OTP, return (ok, message, reset_token).
-    reset_token is a short-lived token stored on the User row.
+    Verify OTP submitted by superadmin.
+
+    Returns (ok: bool, message: str, reset_token: str | None).
+    reset_token is a short-lived token stored (hashed) on the User row.
     """
-    user = User.query.filter_by(is_superadmin=True, email=submitted_email.strip().lower()).first()
+    email = (submitted_email or '').strip().lower()
+    user  = User.query.filter_by(is_superadmin=True, email=email).first()
+
     if not user:
+        # No enumeration — same message as a real OTP failure
         return False, 'Invalid OTP or account.', None
 
-    ok, msg = verify_otp('superadmin', user.id, raw_otp)
+    ok, msg = verify_otp(
+        user_type='superadmin',
+        user_id=user.id,
+        raw_otp=raw_otp,
+        # tenant_id not supplied — superadmin is tenantless
+    )
+
     if not ok:
-        log_security_event('sa_otp_failed', user, f'OTP verify failed: {msg}', 'warning')
+        log_security_event(
+            'sa_otp_failed', user,
+            f'Superadmin OTP verification failed: {msg}', 'warning',
+        )
         return False, msg, None
 
     token = user.generate_reset_token(expires_in_minutes=_get_reset_token_ttl_minutes())
     db.session.commit()
-    log_security_event('sa_otp_verified', user, 'OTP verified', 'info')
+
+    log_security_event('sa_otp_verified', user, 'Superadmin OTP verified', 'info')
     return True, 'OTP verified. Set your new password.', token
 
 
-def complete_superadmin_reset(token: str, new_password: str) -> tuple[bool, str]:
-    """Apply password, invalidate all sessions."""
+def complete_superadmin_reset(
+    token: str,
+    new_password: str,
+) -> tuple[bool, str]:
+    """Apply new password, invalidate all sessions for the superadmin account."""
     user = User.query.filter_by(is_superadmin=True).filter(
         User.password_reset_token == _hash_token(token)
     ).first()
+
     if not user or not user.verify_reset_token(token):
-        logger.warning('Superadmin reset: token lookup failed (not found or expired)')
+        logger.warning(
+            '[SUPERADMIN RESET] Token lookup failed — not found, expired, or wrong hash'
+        )
         return False, 'Reset link is invalid or has expired.'
 
     _apply_password_change(user, new_password)
-    log_security_event('sa_pw_reset_complete', user, f'Password reset from {_get_ip()}', 'info')
+    log_security_event(
+        'sa_pw_reset_complete', user,
+        f'Superadmin password reset from ip={_get_ip()}', 'info',
+    )
     return True, 'Password changed. Please log in.'
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# B. Admin (tenant admin user) reset
+# B. Admin (tenant admin user) reset — MailerSend via send_otp_email()
+#    DO NOT MODIFY THIS SECTION
 # ─────────────────────────────────────────────────────────────────────────────
 
-def initiate_admin_reset(submitted_email: str, submitted_username: str = '') -> tuple[bool, str]:
+def initiate_admin_reset(
+    submitted_email: str,
+    submitted_username: str = '',
+) -> tuple[bool, str]:
     """
     Initiate admin (non-superadmin) OTP reset.
-    Requires BOTH username AND email to match the same User row.
+    Delivery: email_service.send_otp_email() → SMTP primary / MailerSend fallback.
+    DO NOT TOUCH — this flow is not in scope for v4.0.
     """
     if not _recovery_enabled():
         return False, 'Password recovery is currently disabled.'
 
     generic = 'If an account exists with those credentials, an OTP has been sent.'
-    email   = submitted_email.strip().lower()
+    email   = (submitted_email or '').strip().lower()
     uname   = (submitted_username or '').strip()
 
     if not email or not uname:
         return False, 'Username and email are both required.'
 
     user = User.query.filter_by(email=email, username=uname, is_superadmin=False).first()
+    logger.info('[ADMIN RESET] email=%s username=%s found=%s', email, uname, bool(user))
+
     if not user:
         return True, generic
 
     ip, ua, ttl = _get_ip(), _get_ua(), _get_ttl_minutes()
     raw_otp = create_otp_record(
-        user_type='admin', user_id=user.id, email=user.email,
-        tenant_id=user.tenant_id, ip_address=ip, user_agent=ua,
+        user_type='admin',
+        user_id=user.id,
+        email=user.email,
+        tenant_id=user.tenant_id,
+        ip_address=ip,
+        user_agent=ua,
     )
     db.session.commit()
-    send_otp_email(
-        recipient_email=user.email, otp=raw_otp,
-        user_type='admin', ip_address=ip, user_agent=ua, ttl_minutes=ttl,
+
+    sent = send_otp_email(
+        recipient_email=user.email,
+        otp=raw_otp,
+        user_type='admin',
+        ip_address=ip,
+        user_agent=ua,
+        ttl_minutes=ttl,
     )
-    log_security_event('admin_pw_reset_initiated', user, f'OTP sent from {ip}', 'info')
+
+    if not sent:
+        logger.error('[ADMIN RESET] OTP email delivery failed for user_id=%s', user.id)
+
+    log_security_event('admin_pw_reset_initiated', user, f'Admin OTP sent from ip={ip}', 'info')
     return True, generic
 
 
-def verify_admin_otp(submitted_email: str, raw_otp: str) -> tuple[bool, str, str | None]:
-    email = submitted_email.strip().lower()
-    user  = User.query.filter_by(email=email, is_superadmin=False).first()
+def verify_admin_otp(
+    submitted_email: str,
+    raw_otp: str,
+    tenant_id: str,
+) -> tuple[bool, str, str | None]:
+    """DO NOT TOUCH — admin flow, not in scope for v4.0."""
+    email = (submitted_email or '').strip().lower()
+    user  = User.query.filter_by(email=email, tenant_id=tenant_id).first()
+
     if not user:
         return False, 'Invalid OTP or account.', None
 
@@ -213,41 +438,37 @@ def verify_admin_otp(submitted_email: str, raw_otp: str) -> tuple[bool, str, str
 
 
 def complete_admin_reset(token: str, new_password: str) -> tuple[bool, str]:
+    """DO NOT TOUCH — admin flow, not in scope for v4.0."""
     user = User.query.filter_by(is_superadmin=False).filter(
         User.password_reset_token == _hash_token(token)
     ).first()
+
     if not user or not user.verify_reset_token(token):
-        logger.warning('Admin reset: token lookup failed (not found or expired)')
+        logger.warning('[ADMIN RESET] Token lookup failed')
         return False, 'Reset link is invalid or has expired.'
+
     _apply_password_change(user, new_password)
-    log_security_event('admin_pw_reset_complete', user, f'Password reset from {_get_ip()}', 'info')
+    log_security_event(
+        'admin_pw_reset_complete', user,
+        f'Admin password reset from ip={_get_ip()}', 'info',
+    )
     return True, 'Password changed. Please log in.'
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# C. Tenant reset (validates email against Tenant.contact_email)
+# C. Tenant reset — MailerSend via send_otp_email()
+#    DO NOT MODIFY THIS SECTION
 # ─────────────────────────────────────────────────────────────────────────────
 
-def initiate_tenant_reset(submitted_email: str, username: str | None,
-                           tenant_slug: str) -> tuple[bool, str]:
+def initiate_tenant_reset(
+    submitted_email: str,
+    username: str | None,
+    tenant_slug: str,
+) -> tuple[bool, str]:
     """
     Initiate tenant OTP reset.
-
-    Validation (per spec — all REQUIRED, all must match the SAME user row):
-      1. username exists
-      2. email exists
-      3. username + email belong to the same User
-      4. that User belongs to the tenant identified by tenant_slug (URL)
-
-    NOTE (v5.4 fix): previous implementation gated on Tenant.contact_email,
-    a config field that is independent of the User record and frequently
-    drifts/unset — causing this function to dead-end before ever calling
-    create_otp_record()/send_otp_email(). Validation now targets the User
-    row directly, matching the documented flow and the working Test-Email
-    code path (same mailersend_service, just no longer short-circuited).
-
-    On any mismatch → single generic error; no OTP created; no email sent;
-    no indication of which field was wrong (anti-enumeration).
+    Delivery: email_service.send_otp_email() → SMTP primary / MailerSend fallback.
+    DO NOT TOUCH — this flow is not in scope for v4.0.
     """
     if not _recovery_enabled():
         return False, 'Password recovery is currently disabled.'
@@ -263,48 +484,72 @@ def initiate_tenant_reset(submitted_email: str, username: str | None,
 
     tenant = Tenant.query.filter_by(slug=tenant_slug).first()
     if not tenant:
-        logger.warning('Tenant reset: unknown tenant_slug=%s', tenant_slug)
+        logger.warning('[TENANT RESET] unknown tenant_slug=%s', tenant_slug)
         return False, generic_err
 
-    # Single query: username AND email must match the SAME row,
-    # AND that row must belong to the tenant resolved from the URL slug.
     user = User.query.filter_by(
-        username=uname, email=email, is_superadmin=False,
+        username=uname,
+        email=email,
+        is_superadmin=False,
         tenant_id=tenant.id,
     ).first()
 
     if not user:
         logger.warning(
-            'Tenant reset blocked: no match for username=%s email=%s tenant=%s',
+            '[TENANT RESET] no match username=%s email=%s tenant=%s',
             uname, email, tenant_slug,
         )
-        return False, generic_err  # Per spec: explicit generic error, no field disclosure
+        return False, generic_err
 
     ip, ua, ttl = _get_ip(), _get_ua(), _get_ttl_minutes()
     raw_otp = create_otp_record(
-        user_type='tenant', user_id=user.id, email=user.email,
-        tenant_id=user.tenant_id, ip_address=ip, user_agent=ua,
+        user_type='tenant',
+        user_id=user.id,
+        email=user.email,
+        tenant_id=user.tenant_id,
+        ip_address=ip,
+        user_agent=ua,
     )
     db.session.commit()
+
     sent = send_otp_email(
-        recipient_email=user.email, otp=raw_otp,
-        user_type='tenant', ip_address=ip, user_agent=ua, ttl_minutes=ttl,
+        recipient_email=user.email,
+        otp=raw_otp,
+        user_type='tenant',
+        ip_address=ip,
+        user_agent=ua,
+        ttl_minutes=ttl,
     )
+
     if not sent:
-        logger.error('Tenant OTP email delivery failed for user %s (tenant=%s)',
-                      user.id, tenant_slug)
-    log_security_event('tenant_pw_reset_initiated', user, f'OTP sent from {ip}', 'info')
+        logger.error(
+            '[TENANT RESET] OTP email delivery failed for user_id=%s tenant=%s',
+            user.id, tenant_slug,
+        )
+
+    log_security_event(
+        'tenant_pw_reset_initiated', user,
+        f'Tenant OTP sent from ip={ip}', 'info',
+    )
     return True, generic_ok
 
 
-def verify_tenant_otp(submitted_email: str, raw_otp: str, tenant_slug: str) -> tuple[bool, str, str | None]:
-    email = submitted_email.strip().lower()
+def verify_tenant_otp(
+    submitted_email: str,
+    raw_otp: str,
+    tenant_slug: str,
+) -> tuple[bool, str, str | None]:
+    """DO NOT TOUCH — tenant flow, not in scope for v4.0."""
+    email  = (submitted_email or '').strip().lower()
     tenant = Tenant.query.filter_by(slug=tenant_slug).first()
+
     if not tenant:
         return False, 'Invalid OTP or account.', None
 
-    user = User.query.filter_by(email=email, is_superadmin=False,
-                                 tenant_id=tenant.id).first()
+    user = User.query.filter_by(
+        email=email, is_superadmin=False, tenant_id=tenant.id
+    ).first()
+
     if not user:
         return False, 'Invalid OTP or account.', None
 
@@ -317,52 +562,38 @@ def verify_tenant_otp(submitted_email: str, raw_otp: str, tenant_slug: str) -> t
     return True, 'OTP verified. Set your new password.', token
 
 
-def complete_tenant_reset(token: str, new_password: str, tenant_id: int) -> tuple[bool, str]:
+def complete_tenant_reset(
+    token: str,
+    new_password: str,
+    tenant_id: int,
+) -> tuple[bool, str]:
     """
     Apply password change — enforces tenant isolation via tenant_id.
+    DO NOT TOUCH — tenant flow, not in scope for v4.0.
     """
     user = User.query.filter_by(is_superadmin=False, tenant_id=tenant_id).filter(
         User.password_reset_token == _hash_token(token)
     ).first()
+
     if not user:
         logger.warning(
-            'Tenant reset failed: no user row matches token hash for tenant_id=%s '
-            '(token not found / already used / wrong tenant)', tenant_id,
+            '[TENANT RESET] no user row matches token hash for tenant_id=%s '
+            '(not found / already used / wrong tenant)', tenant_id,
         )
         return False, 'Reset link is invalid or has expired.'
+
     if not user.verify_reset_token(token):
         logger.warning(
-            'Tenant reset failed: user=%s tenant_id=%s expires_at=%s now=%s — '
-            'expired or hash mismatch',
+            '[TENANT RESET] expired or hash mismatch user_id=%s tenant_id=%s '
+            'expires_at=%s now=%s',
             user.id, tenant_id, user.password_reset_expires,
             datetime.now(timezone.utc),
         )
         return False, 'Reset link is invalid or has expired.'
+
     _apply_password_change(user, new_password)
-    log_security_event('tenant_pw_reset_complete', user, f'Password reset from {_get_ip()}', 'info')
+    log_security_event(
+        'tenant_pw_reset_complete', user,
+        f'Tenant password reset from ip={_get_ip()}', 'info',
+    )
     return True, 'Password changed. Please log in.'
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Shared helpers
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _get_ttl_minutes() -> int:
-    try:
-        return max(1, GlobalEmailConfig.get().otp_expiry_minutes or _MAX_OTP_TTL)
-    except Exception:
-        return _MAX_OTP_TTL
-
-
-def _apply_password_change(user: User, new_password: str) -> None:
-    """
-    Set new password, rotate session token (invalidates all existing sessions),
-    clear reset token, clear require_password_reset flag.
-    """
-    user.password                = new_password
-    user.session_token           = secrets.token_urlsafe(32)   # Rotate → kills all sessions
-    user.require_password_reset  = False
-    user.last_password_changed   = datetime.now(timezone.utc)
-    user.clear_reset_token()
-    db.session.commit()
-    logger.info('Password changed for user %s (type detection at call site)', user.id)

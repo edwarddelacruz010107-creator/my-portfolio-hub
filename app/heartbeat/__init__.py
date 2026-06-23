@@ -334,10 +334,29 @@ def health():
     Detailed health report for internal use, Kubernetes liveness/readiness
     probes, Docker HEALTHCHECK, and dashboards.
 
-    NOT intended for BetterStack (use /heartbeat for that).
-    Returns 200 when healthy, 503 when a critical dependency (either
-    database bind) is unreachable or missing required tables.
+    HIGH-04 FIX: Requires Bearer token matching HEARTBEAT_SECRET, OR
+    an authenticated superadmin session. Public callers get only {"status":"ok"}.
     """
+    import os as _os
+    from flask import request as _req, jsonify as _json
+    from flask_login import current_user as _cu
+
+    # Allow Docker HEALTHCHECK / internal callers with valid bearer token
+    auth_header = _req.headers.get("Authorization", "")
+    heartbeat_secret = _os.environ.get("HEARTBEAT_SECRET", "")
+    bearer_valid = (
+        heartbeat_secret
+        and auth_header == f"Bearer {heartbeat_secret}"
+    )
+    superadmin_session = (
+        hasattr(_cu, "is_authenticated")
+        and _cu.is_authenticated
+        and getattr(_cu, "is_superadmin", False)
+    )
+
+    if not bearer_valid and not superadmin_session:
+        return _json({"status": "ok"}), 200
+
     from app import db
 
     uptime_seconds = time.monotonic() - _state["start_time"]
@@ -516,11 +535,16 @@ def init_heartbeat(app) -> None:
     global _selfping_thread  # noqa: PLW0603
 
     # Register the blueprint (exempt from CSRF — monitoring pings are GET-only)
+    # Guard against double-registration: Werkzeug's stat reloader calls create_app()
+    # twice in the same process (parent + child). heartbeat_bp is a module-level
+    # singleton, so the second call would raise ValueError. Check first.
     from app import csrf
     csrf.exempt(heartbeat_bp)
-    app.register_blueprint(heartbeat_bp)
-
-    logger.info("Heartbeat blueprint registered (/heartbeat, /api/heartbeat, /health)")
+    if 'heartbeat' not in app.blueprints:
+        app.register_blueprint(heartbeat_bp)
+        logger.info("Heartbeat blueprint registered (/heartbeat, /api/heartbeat, /health)")
+    else:
+        logger.debug("Heartbeat blueprint already registered — skipping (reloader re-import)")
 
     # ── Self-ping thread ──────────────────────────────────────────────────────
     self_ping_enabled = _str_to_bool(

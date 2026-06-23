@@ -44,7 +44,7 @@ def _get_mailersend_key(portal: str = 'tenant') -> str:
     """
     Resolve the active MailerSend API key for the specified portal.
 
-    portal: 'superadmin' | 'admin' | 'tenant'
+    portal: 'superadmin' | 'admin' | 'tenant' 
     Priority per portal:
       1. GlobalEmailConfig.<portal>_mailersend_api_key (DB, Fernet-encrypted)
       2. GlobalEmailConfig.mailersend_api_key (shared DB key)
@@ -67,12 +67,30 @@ def _get_mailersend_key(portal: str = 'tenant') -> str:
     # Env fallback (already handled inside get_portal_key when cfg loads,
     # but if the DB is down entirely, resolve directly from env)
     import os
-    if portal == 'superadmin':
-        return os.environ.get('SUPERADMIN_MAILERSEND_API_KEY', '') or os.environ.get('MAILERSEND_API_KEY', '').strip()
-    if portal == 'admin':
-        return os.environ.get('ADMIN_MAILERSEND_API_KEY', '') or os.environ.get('MAILERSEND_API_KEY', '').strip()
-    return os.environ.get('MAILERSEND_API_KEY', '').strip()
+    shared = os.environ.get(
+        'MAILERSEND_API_KEY',
+        ''
+    ).strip()
 
+    if portal == 'superadmin':
+        return (
+            os.environ.get(
+                'SUPERADMIN_MAILERSEND_API_KEY',
+                ''
+            ).strip()
+            or shared
+        )
+
+    if portal == 'admin':
+        return (
+            os.environ.get(
+                'ADMIN_MAILERSEND_API_KEY',
+                ''
+            ).strip()
+            or shared
+        )
+
+    return shared
 
 # Public alias used by app startup diagnostics
 def get_mailersend_key() -> str:
@@ -462,11 +480,20 @@ def send_otp_email(
   </p>
 </div>'''
 
-    ok, _ = send_email(recipient_email, subject, text, html=html, portal=portal)
+    ok, response = send_email(recipient_email, subject, text, html=html, portal=portal)
     if ok:
+        logger.info(
+            "OTP email delivered: portal=%s email=%s",
+            portal,
+            recipient_email,
+        )
         return True
-    logger.warning(
-        'MailerSend OTP send failed for %s (portal=%s)', recipient_email, portal
+
+    logger.error(
+        "OTP email failed: portal=%s email=%s error=%s",
+        portal,
+        recipient_email,
+        response,
     )
     return _smtp_fallback(recipient_email, subject, text)
 
