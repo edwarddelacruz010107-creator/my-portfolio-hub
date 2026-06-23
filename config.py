@@ -260,7 +260,7 @@ class ProductionConfig(BaseConfig):
     # FIX [CRITICAL-1]: Only one assignment per variable, in the correct class.
     SESSION_COOKIE_SECURE  = True
     REMEMBER_COOKIE_SECURE = True
-    WTF_CSRF_SSL_STRICT    = False   # Allow CSRF tokens over HTTP for initial setup; app should be behind HTTPS in production.
+    WTF_CSRF_SSL_STRICT    = True    # FIX MED-01: enforce CSRF token origin validation on HTTPS (ensure X-Forwarded-Proto is set by NGINX/Render)
     WTF_CSRF_ENABLED = True
 
     SQLALCHEMY_ECHO          = False
