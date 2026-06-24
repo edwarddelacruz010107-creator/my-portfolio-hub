@@ -55,6 +55,9 @@ from app.models.tenant_form_settings import (
     WEB3FORMS_URL,
 )
 
+# ── Per-tenant SMTP credentials (core_db — v5.9) ────────────────────────────
+from app.models.tenant_smtp_credential import TenantSmtpCredential
+
 __all__ = [
     # core_db
     'Tenant', 'User', 'Subscription', 'WebhookEvent',
@@ -70,4 +73,6 @@ __all__ = [
     'PLAN_FEATURES', 'PAID_PLAN_NAMES',
     # form settings
     'TenantFormSettings', 'VALID_PROVIDERS', 'BASIN_PREFIX', 'WEB3FORMS_URL',
+    # smtp credentials
+    'TenantSmtpCredential',
 ]

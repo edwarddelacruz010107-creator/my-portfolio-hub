@@ -10,6 +10,7 @@ Usage (in create_app(), after app.config.from_object()):
     validate_startup_env(app)
 """
 import os
+import re
 import sys
 import logging
 
@@ -48,6 +49,8 @@ _REQUIRED_IF_MAILERSEND = [
     "MAILERSEND_API_KEY",
     "MAILERSEND_FROM_EMAIL",
 ]
+
+_EMAIL_RE = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
 
 
 def _has_placeholder(value: str) -> bool:
@@ -119,13 +122,36 @@ def validate_startup_env(app) -> None:
             elif _has_placeholder(str(val)):
                 errors.append(f"{key} contains placeholder text.")
 
-        # MailerSend
+        # MailerSend — this is the transport behind the email_only / Obj #1
+        # guarantee path (default tenant + any tenant with no explicit
+        # receiver). Missing it doesn't just degrade a feature, it silently
+        # breaks the "contact form always reaches the admin" guarantee, so
+        # it's a hard production error, not a warning.
         for key in _REQUIRED_IF_MAILERSEND:
             val = os.environ.get(key, "")
             if not val:
-                warnings.append(f"MailerSend key not set: {key} — email delivery will fail.")
+                errors.append(
+                    f"Missing required production variable: {key} "
+                    f"(required for the guaranteed admin-delivery contact-form path)."
+                )
             elif _has_placeholder(val):
                 errors.append(f"{key} contains placeholder text.")
+
+        # ADMIN_EMAIL — last-resort fallback in _resolve_receiver_email().
+        # If it's missing or malformed AND a tenant has no explicit
+        # receiver_email/admin user, contact form submissions have no
+        # guaranteed destination at all.
+        admin_email = os.environ.get("ADMIN_EMAIL", "").strip()
+        if not admin_email:
+            warnings.append(
+                "ADMIN_EMAIL not set — if a tenant has no receiver_email and no "
+                "admin user, contact form submissions will have no delivery "
+                "destination and will fall back to the internal inbox only."
+            )
+        elif not _EMAIL_RE.match(admin_email):
+            errors.append(f"ADMIN_EMAIL is not a valid email address: {admin_email!r}")
+        elif _has_placeholder(admin_email):
+            errors.append("ADMIN_EMAIL contains placeholder text.")
 
     # ── PayMongo conditional ──────────────────────────────────────────────────
     if os.environ.get("PAYMONGO_ENABLED", "").lower() in ("true", "1", "yes"):

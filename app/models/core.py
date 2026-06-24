@@ -124,6 +124,35 @@ def _get_fernet() -> _Fernet:
     return _Fernet(key.encode())
 
 
+def _get_previous_fernets() -> list:
+    """
+    Retired encryption keys, for decrypt-only fallback during key rotation.
+
+    Rotation procedure:
+      1. Move the current FERNET_KEY value into FERNET_KEY_PREVIOUS
+         (comma-separated if rotating more than once without re-encrypting
+         everything yet).
+      2. Set FERNET_KEY to a newly generated key.
+      3. Restart. Existing ciphertext keeps decrypting via the previous-key
+         fallback below; anything newly encrypted uses the new key.
+      4. Optionally run a background re-encrypt pass, then drop the old
+         key from FERNET_KEY_PREVIOUS once nothing references it.
+    """
+    raw = _os.environ.get('FERNET_KEY_PREVIOUS', '').strip()
+    if not raw:
+        return []
+    fernets = []
+    for chunk in raw.split(','):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        try:
+            fernets.append(_Fernet(chunk.encode()))
+        except Exception:
+            _comm_logger.warning('FERNET_KEY_PREVIOUS contains an invalid key — skipped.')
+    return fernets
+
+
 def encrypt_secret(plaintext: str) -> str:
     if not plaintext:
         return ''
@@ -136,6 +165,14 @@ def decrypt_secret(ciphertext: str) -> str:
     try:
         return _get_fernet().decrypt(ciphertext.encode()).decode()
     except _InvalidToken:
+        # Key rotation fallback — try retired keys before giving up.
+        for fernet in _get_previous_fernets():
+            try:
+                value = fernet.decrypt(ciphertext.encode()).decode()
+                _comm_logger.info('decrypt_secret: decrypted using FERNET_KEY_PREVIOUS entry (rotation in progress).')
+                return value
+            except _InvalidToken:
+                continue
         _comm_logger.warning('decrypt_secret: InvalidToken — key rotation or corruption?')
         return ''
     except RuntimeError:

@@ -1249,6 +1249,19 @@ def tenant_new():
         user.password = password
         db.session.add(user)
 
+        # Obj #1/#2 guarantee: every newly created tenant gets a
+        # TenantFormSettings row wired to its admin's email immediately,
+        # rather than relying on the visitor's first contact-form submission
+        # to fall through the inbox-only path before anyone configures it.
+        from app.models.tenant_form_settings import TenantFormSettings
+        db.session.flush()  # ensure tenant.id is available (already flushed above, safe no-op)
+        form_settings = TenantFormSettings.get_or_create(tenant.id)
+        if not form_settings.receiver_email:
+            form_settings.receiver_email = email
+        if form_settings.provider == 'disabled':
+            form_settings.provider = 'email_only'
+        form_settings.is_enabled = True
+
         try:
             db.session.commit()
         except Exception as exc:

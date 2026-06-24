@@ -282,6 +282,7 @@ def _dispatch(
     if provider == 'web3forms':
         return _dispatch_web3forms(
             tenant_slug=tenant_slug,
+            tenant=tenant,
             form_settings=form_settings,
             inquiry=inquiry,
             name=name, email=email, subject=subject, message=message,
@@ -366,7 +367,7 @@ def _dispatch_basin(*, tenant_slug, form_settings, inquiry, name, email, subject
     return _inbox_fallback(tenant_slug, inquiry.id, 'basin', err)
 
 
-def _dispatch_web3forms(*, tenant_slug, form_settings, inquiry, name, email, subject, message) -> ContactResult:
+def _dispatch_web3forms(*, tenant_slug, tenant, form_settings, inquiry, name, email, subject, message) -> ContactResult:
     api_key = form_settings.api_key or ''  # decrypted in-process
 
     if not api_key:
@@ -376,7 +377,22 @@ def _dispatch_web3forms(*, tenant_slug, form_settings, inquiry, name, email, sub
         )
         return _inbox_fallback(tenant_slug, inquiry.id, 'web3forms', 'Web3Forms API key not configured')
 
-    receiver = (form_settings.receiver_email or '').strip()
+    # Obj #1/#2 guarantee: resolve receiver through the same fallback chain
+    # used by email_only, instead of trusting the raw (possibly NULL) column.
+    # Without this, an unset receiver_email silently defers delivery to
+    # whatever inbox is tied to the Web3Forms access_key, which may not be
+    # the tenant's administrator.
+    receiver = _resolve_receiver_email(tenant_slug, tenant, form_settings)
+
+    if not receiver:
+        logger.error(
+            'contact[web3forms]: tenant=%s inquiry_id=%s NO receiver_email resolved → inbox fallback',
+            tenant_slug, inquiry.id,
+        )
+        return _inbox_fallback(
+            tenant_slug, inquiry.id, 'web3forms',
+            'No receiver email could be resolved — message saved to inbox',
+        )
 
     logger.info(
         'contact[web3forms]: tenant=%s inquiry_id=%s receiver=%s',
