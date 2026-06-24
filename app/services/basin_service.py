@@ -67,7 +67,7 @@ def submit_to_basin(
         extra_fields: Any additional fields to include.
     """
     if not basin_endpoint or not basin_endpoint.startswith(_BASIN_ACCEPT_URL_PREFIX):
-        logger.error('basin_service: invalid endpoint: %r', basin_endpoint)
+        logger.error('basin_service: invalid endpoint (does not start with expected prefix)')
         return False, 'Invalid Basin endpoint configured for this tenant.'
 
     payload = {
@@ -93,7 +93,7 @@ def submit_to_basin(
         )
         body = resp.json()
         if resp.status_code in (200, 201) and body.get('success'):
-            logger.info('basin_service: submitted to %s OK', basin_endpoint)
+            logger.info('basin_service: submitted to ***%s OK', basin_endpoint[-8:])
             return True, ''
         err = body.get('error') or body.get('message', f'HTTP {resp.status_code}')
         logger.warning('basin_service: submission failed: %s', err)

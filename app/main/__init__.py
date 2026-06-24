@@ -36,7 +36,7 @@ from app.models.portfolio import (
     normalize_plan_name,
 )
 from app.security import FileUploadPolicy, log_security_event
-from app.utils import BILLING_PLANS, is_paymongo_enabled, log_activity, send_inquiry_email, validate_contact_payload
+from app.utils import BILLING_PLANS, is_paymongo_enabled, log_activity
 
 logger = logging.getLogger(__name__)
 main   = Blueprint('main', __name__)
@@ -184,84 +184,47 @@ def sitemap_xml():
 @main.route('/contact', methods=['GET', 'POST'])
 @limiter.limit(lambda: current_app.config.get('RATELIMIT_CONTACT_FORM', "5 per minute; 20 per hour"))
 def contact():
-    """Legacy root contact endpoint (no tenant)."""
+    """
+    Default portfolio contact endpoint (v5.8).
+    Delegates to contact_service — same pipeline as all tenant contacts.
+    Submissions are routed to the default tenant administrator's email.
+    """
     if request.method == 'GET':
         return redirect(url_for('root'))
 
+    # Honeypot
     if request.form.get('website', ''):
         return jsonify(status='success', message='Your message has been sent.')
 
-    errors, name, email, subject, message = validate_contact_payload()
-    if errors:
-        return jsonify(status='error', message=errors[0]), 400
+    raw = request.form
+    name       = raw.get('name', '').strip()
+    email      = raw.get('email', '').strip()
+    subject    = raw.get('subject', '').strip()
+    message    = raw.get('message', '').strip()
+    sub_id     = raw.get('submission_id', '').strip()[:80]
 
     ip = request.headers.get('X-Forwarded-For', request.remote_addr)
     if ip and ',' in ip:
         ip = ip.split(',')[0].strip()
 
-    submission_id = (request.form.get('submission_id') or (request.get_json(silent=True) or {}).get('submission_id') or '').strip()[:80]
-    if submission_id:
-        existing = Inquiry.query.filter_by(tenant_slug='default', submission_id=submission_id).first()
-        if existing:
-            return jsonify(
-                status='success',
-                message="Your message has been sent. I'll get back to you soon!"
-            )
-
-    from app.models.portfolio import Tenant
-    default_tenant = Tenant.query.filter_by(slug='default').first()
-
-    inquiry = Inquiry(
-        tenant_id=(default_tenant.id if default_tenant else None),
+    from app.services.contact_service import process_contact_submission
+    result = process_contact_submission(
         tenant_slug='default',
-        name=name, email=email,
-        subject=subject, message=message,
-        ip_address=ip,
+        name=name,
+        email=email,
+        subject=subject,
+        message=message,
+        ip_address=(ip or '')[:45],
         user_agent=(request.headers.get('User-Agent') or '')[:300],
-        submission_id=submission_id or None,
-        sender='visitor',
-        is_read=False,
-        provider_used='email',
-        delivery_status='pending',
+        submission_id=sub_id or None,
     )
-    db.session.add(inquiry)
-    db.session.commit()
-    log_activity('create', 'inquiry', name, f'Contact from {email}')
 
-    try:
-        from app.services.mailersend_service import send_system_notification
-
-        dest = (current_app.config.get('ADMIN_EMAIL') or '').strip()
-        if dest:
-            ok = send_system_notification(
-                dest,
-                f'New inquiry from {name}: {subject or "Contact Form"}',
-                (
-                    f'Name:    {name}\n'
-                    f'Email:   {email}\n'
-                    f'Subject: {subject}\n\n'
-                    f'{message}\n'
-                ),
-            )
-            inquiry.delivery_status = 'delivered' if ok else 'failed'
-            if not ok:
-                inquiry.delivery_error = 'Email delivery failed.'
-        else:
-            inquiry.delivery_status = 'skipped'
-            inquiry.delivery_error = 'Email not configured.'
-        db.session.commit()
-    except Exception:
-        current_app.logger.exception('Default contact email delivery failed')
-        try:
-            inquiry.delivery_status = 'failed'
-            inquiry.delivery_error = 'Unexpected delivery error.'
-            db.session.commit()
-        except Exception:
-            pass
+    if not result.success:
+        return jsonify(status='error', message=result.delivery_error or 'Submission failed.'), 400
 
     return jsonify(
         status='success',
-        message="Your message has been sent. I'll get back to you soon!"
+        message="Your message has been sent. I'll get back to you soon!",
     )
 
 

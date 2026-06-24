@@ -71,6 +71,22 @@ from app.limiter_config import create_limiter_key_func
 # through the request, with no fallback. We now pre-flight-check Redis
 # with a short-timeout PING at app-factory time and fall back to
 # memory:// (logged as a WARNING, never raised) if it's unreachable.
+
+def _request_wants_json() -> bool:
+    """Return True when the current request prefers a JSON response."""
+    from flask import request as _req
+    try:
+        accept = _req.accept_mimetypes
+        return (
+            accept.best == 'application/json'
+            or 'application/json' in str(accept)
+            or _req.is_json
+            or _req.path.startswith('/api/')
+        )
+    except Exception:
+        return False
+
+
 def resolve_limiter_storage_uri(app) -> str:
     """
     Resolve the storage backend for Flask-Limiter.
@@ -589,8 +605,31 @@ def create_app(config_name: str = 'default') -> Flask:
     @app.errorhandler(500)
     def internal_error(e):
         db.session.rollback()
-        logger.exception('Internal server error')
+        # Log full traceback server-side but NEVER expose to client
+        logger.exception('Internal server error: %s', e)
+        if _request_wants_json():
+            from flask import jsonify as _jsonify
+            return _jsonify(status='error', message='An internal error occurred.'), 500
         return render_template('errors/500.html'), 500
+
+    @app.errorhandler(Exception)
+    def handle_unhandled_exception(e):
+        """
+        Catch-all for unhandled exceptions in production.
+        Prevents raw Python tracebacks from reaching the client.
+        DB session is rolled back defensively.
+        """
+        from werkzeug.exceptions import HTTPException
+        if isinstance(e, HTTPException):
+            return e   # Let Werkzeug handle standard HTTP errors normally
+        db.session.rollback()
+        logger.exception('Unhandled exception: %s', e)
+        if _request_wants_json():
+            from flask import jsonify as _jsonify
+            return _jsonify(status='error', message='An unexpected error occurred.'), 500
+        if not app.debug:
+            return render_template('errors/500.html'), 500
+        raise  # Re-raise in debug mode so Werkzeug debugger works
 
     register_cli_commands(app)
     
@@ -602,25 +641,68 @@ def create_app(config_name: str = 'default') -> Flask:
     logger.info(f'Environment: {app.config.get("ENV", "unknown")}')
     logger.info(f'Debug Mode: {app.debug}')
     logger.info(f'Testing Mode: {app.testing}')
-    
-    # MailerSend check
+
+    # SECURITY: warn loudly if debug mode is on in a non-dev environment
+    if app.debug and not app.testing:
+        env_name = app.config.get('ENV', '')
+        if env_name not in ('development', 'dev', ''):
+            logger.critical(
+                'SECURITY WARNING: DEBUG=True in env=%r — '
+                'NEVER run debug mode in production (exposes stack traces and Werkzeug console)',
+                env_name,
+            )
+
+    # MailerSend check (shared + per-portal)
     try:
         from app.services.mailersend_service import get_mailersend_key
-        if get_mailersend_key():
-            logger.info('✓ MailerSend API: Configured')
+        shared_key = get_mailersend_key()
+        if shared_key:
+            logger.info('✓ MailerSend API (shared): Configured')
         else:
-            logger.warning('⚠ MailerSend API: Disabled (falling back to SMTP)')
+            logger.warning('⚠ MailerSend API (shared): Not configured — falling back to SMTP')
+
+        # Per-portal key check
+        import os as _os
+        for _portal in ('superadmin', 'admin'):
+            _env_key = _os.environ.get(f'{_portal.upper()}_MAILERSEND_API_KEY', '')
+            if _env_key:
+                logger.info('✓ MailerSend API (%s portal): Separate key configured', _portal)
+            else:
+                logger.info('  MailerSend API (%s portal): Using shared key', _portal)
     except Exception as e:
-        logger.warning(f'⚠ MailerSend check failed: {e}')
-    
+        logger.warning('⚠ MailerSend check failed: %s', e)
+
+    # SMTP fallback check
+    try:
+        from app.services.email_service import _smtp_enabled, _smtp_is_configured
+        if _smtp_enabled():
+            if _smtp_is_configured():
+                logger.info('✓ SMTP fallback: Enabled and configured')
+            else:
+                logger.warning('⚠ SMTP fallback: SMTP_ENABLED=true but configuration is incomplete')
+        else:
+            logger.info('  SMTP fallback: Disabled (SMTP_ENABLED not set)')
+    except Exception as e:
+        logger.warning('⚠ SMTP fallback check failed: %s', e)
+
+    # ADMIN_EMAIL check (critical for default tenant contact delivery)
+    _admin_email = _os.environ.get('ADMIN_EMAIL', '').strip()
+    if _admin_email:
+        logger.info('✓ ADMIN_EMAIL: Set (%s**)', _admin_email[:3])
+    else:
+        logger.warning(
+            '⚠ ADMIN_EMAIL: Not set — default tenant contact form will attempt '
+            'to resolve via admin user account (OK if admin user exists)'
+        )
+
     # Blueprint registration
-    logger.info(f'✓ Blueprints registered: {len(app.blueprints)} registered')
+    logger.info('✓ Blueprints registered: %d', len(app.blueprints))
     for bp_name in app.blueprints:
-        logger.debug(f'  - {bp_name}')
-    
+        logger.debug('  - %s', bp_name)
+
     # Routes
     routes_count = sum(1 for _ in app.url_map.iter_rules())
-    logger.info(f'✓ Routes loaded: {routes_count} routes')
+    logger.info('✓ Routes loaded: %d routes', routes_count)
     
     logger.info('=' * 80)
     logger.info('APPLICATION STARTUP COMPLETED SUCCESSFULLY')
@@ -973,6 +1055,14 @@ def _ensure_default_tenant():
             db.session.add(profile)
             db.session.commit()
             logger.info("Created default tenant Profile row")
+
+        # Obj #2: bootstrap TenantFormSettings for the default tenant so the
+        # contact form routes to the administrator's email out of the box.
+        try:
+            from app.services.contact_service import bootstrap_default_tenant_form_settings
+            bootstrap_default_tenant_form_settings(db)
+        except Exception as exc:
+            logger.warning("Could not bootstrap default tenant form settings: %s", exc)
     except Exception as exc:
         db.session.rollback()
         logger.warning("Could not ensure default tenant: %s", exc)
@@ -1054,6 +1144,96 @@ def register_cli_commands(app):
 
         db.session.commit()
         click.echo('   → Access admin at /admin/ after logging in at /auth/login')
+
+        # Obj #2: Bootstrap TenantFormSettings so default portfolio contact
+        # form automatically delivers to the admin's email address.
+        try:
+            from app.services.contact_service import bootstrap_default_tenant_form_settings
+            bootstrap_default_tenant_form_settings(db)
+            click.echo('✔  Default tenant form settings bootstrapped (email_only → admin email)')
+        except Exception as exc:
+            click.echo(f'⚠  Could not bootstrap form settings (non-fatal): {exc}')
+
+    @app.cli.command('check-contact-config')
+    def cli_check_contact_config():
+        """
+        Verify contact form delivery is correctly configured for all tenants.
+        Run this after deployment to confirm email routing is working.
+
+        Exit code 0 = all OK, 1 = warnings/errors found.
+        """
+        import os
+        from app.models.portfolio import Tenant
+        from app.models.tenant_form_settings import TenantFormSettings
+        from app.services.contact_service import _resolve_receiver_email
+
+        issues = []
+        tenants = Tenant.query.filter_by(status='active').all()
+        click.echo(f'\n📋 Contact Configuration Check — {len(tenants)} active tenant(s)\n')
+        click.echo('─' * 60)
+
+        for t in tenants:
+            settings = TenantFormSettings.for_tenant(t.id)
+            provider = settings.provider if settings else 'none'
+            enabled  = settings.is_enabled if settings else False
+            configured = settings.is_configured if settings else False
+            receiver = _resolve_receiver_email(t.slug, t, settings)
+
+            status_icon = '✓' if (enabled and configured and receiver) else '⚠'
+            click.echo(f'{status_icon}  Tenant: {t.slug}')
+            click.echo(f'    Provider : {provider}')
+            click.echo(f'    Enabled  : {enabled}')
+            click.echo(f'    Configured: {configured}')
+            click.echo(f'    Receiver : {receiver[:3] + "**@" + receiver.split("@")[1] if receiver and "@" in receiver else "(NONE — fallback to inbox)"}')
+
+            if not receiver:
+                issues.append(f'  [{t.slug}] No receiver_email — submissions save to inbox only')
+            if enabled and not configured:
+                issues.append(f'  [{t.slug}] Provider {provider!r} enabled but not fully configured')
+            click.echo()
+
+        click.echo('─' * 60)
+
+        # Global checks
+        admin_email = os.environ.get('ADMIN_EMAIL', '')
+        if admin_email:
+            click.echo(f'✓  ADMIN_EMAIL env: {admin_email[:3]}**')
+        else:
+            click.echo('⚠  ADMIN_EMAIL env: Not set')
+            issues.append('ADMIN_EMAIL env var not set — last-resort fallback unavailable')
+
+        try:
+            from app.services.mailersend_service import get_mailersend_key
+            if get_mailersend_key():
+                click.echo('✓  MailerSend API key: Configured')
+            else:
+                click.echo('⚠  MailerSend API key: Not configured')
+                issues.append('MAILERSEND_API_KEY not set — email delivery will fall back to SMTP')
+        except Exception as e:
+            click.echo(f'⚠  MailerSend check failed: {e}')
+
+        try:
+            from app.services.email_service import _smtp_enabled, _smtp_is_configured
+            if _smtp_enabled():
+                if _smtp_is_configured():
+                    click.echo('✓  SMTP fallback: Configured')
+                else:
+                    click.echo('⚠  SMTP fallback: SMTP_ENABLED=true but incomplete config')
+                    issues.append('SMTP enabled but not fully configured')
+            else:
+                click.echo('  SMTP fallback: Disabled')
+        except Exception as e:
+            click.echo(f'  SMTP check failed: {e}')
+
+        click.echo('\n' + '─' * 60)
+        if issues:
+            click.echo(f'\n⚠  {len(issues)} issue(s) found:\n')
+            for iss in issues:
+                click.echo(f'  • {iss}')
+            click.echo()
+            raise SystemExit(1)
+        else:
+            click.echo('\n✓  All contact form configurations look healthy.\n')
 
     @app.cli.command('init-db')
     def cli_init_db():
