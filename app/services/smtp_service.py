@@ -315,6 +315,63 @@ def send_superadmin_otp(
     return ok, err
 
 
+def send_admin_otp(
+    email: str,
+    otp: str,
+    ip_address: Optional[str] = None,
+    user_agent: Optional[str] = None,
+    ttl_minutes: int = 10,
+) -> tuple[bool, str]:
+    """
+    Send an admin (tenant admin user) password-reset OTP via SMTP.
+
+    Delivery path: SMTP primary (this function) → MailerSend fallback
+    (handled by the caller in password_reset_service.initiate_admin_reset).
+
+    Mirrors send_superadmin_otp() but uses the 'admin_otp' log context and
+    admin-appropriate copy so log correlation is unambiguous.
+    """
+    now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
+    subject = f'[Portfolio CMS] Admin Password Reset OTP — {now}'
+
+    text = (
+        f'Hello,\n\n'
+        f'A password reset was requested for your Portfolio CMS Admin account.\n\n'
+        f'Your one-time password (OTP) is:\n\n'
+        f'    {otp}\n\n'
+        f'This OTP expires in {ttl_minutes} minutes.\n'
+        f'Do NOT share it with anyone. Portfolio CMS staff will never ask for it.\n\n'
+        f'Request details:\n'
+        f'  IP address : {ip_address or "unknown"}\n'
+        f'  User agent : {(user_agent or "unknown")[:120]}\n'
+        f'  Time (UTC) : {now}\n\n'
+        f'If you did not request this, secure your account immediately.\n\n'
+        f'— Portfolio CMS Admin Security'
+    )
+    html = f'''
+<div style="font-family:sans-serif;max-width:520px;margin:auto;padding:2rem;
+            border:1px solid #e5e7eb;border-radius:8px;">
+  <h2 style="color:#1f2937;margin-top:0;">Admin Password Reset OTP</h2>
+  <p>A password reset was requested for your <strong>Admin</strong> account.</p>
+  <div style="background:#f9fafb;border:1px solid #d1d5db;border-radius:6px;
+              padding:1.5rem;text-align:center;margin:1.5rem 0;">
+    <span style="font-size:2rem;font-weight:700;letter-spacing:.4rem;color:#4f46e5;">{otp}</span>
+  </div>
+  <p style="color:#6b7280;font-size:.9rem;">
+    Expires in <strong>{ttl_minutes} minutes</strong>. Do not share this code.
+  </p>
+  <hr style="border:none;border-top:1px solid #e5e7eb;margin:1.5rem 0;">
+  <p style="color:#9ca3af;font-size:.8rem;">
+    Request IP: {ip_address or "unknown"} &bull; Time: {now}
+  </p>
+</div>'''
+
+    ok, err = send_email(
+        to=email, subject=subject, text=text, html=html, context='admin_otp',
+    )
+    return ok, err
+
+
 def send_security_alert(
     email: str,
     event: str,

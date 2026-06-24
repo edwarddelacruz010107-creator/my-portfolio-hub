@@ -25,7 +25,8 @@ DELIVERY MATRIX (v5.7):
     │ TENANT               │ email_service.send_otp_email()              │
     │                      │ → MailerSend primary / SMTP fallback        │
     ├──────────────────────┼─────────────────────────────────────────────┤
-    │ ADMIN                │ email_service.send_otp_email()              │
+    │ ADMIN                │ smtp_service.send_admin_otp() primary       │
+    │                      │   → email_service.send_otp_email() fallback │
     │                      │ → MailerSend primary / SMTP fallback        │
     ├──────────────────────┼─────────────────────────────────────────────┤
     │ SUPERADMIN           │ smtp_service.send_superadmin_otp()  ONLY     │
@@ -368,8 +369,9 @@ def complete_superadmin_reset(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# B. Admin (tenant admin user) reset — MailerSend primary / SMTP fallback
-#    via email_service.send_otp_email(). Structured step logging added v5.7.
+# B. Admin (tenant admin user) reset — SMTP primary / MailerSend fallback
+#    SMTP primary mirrors the superadmin delivery path (smtp_service.send_admin_otp).
+#    MailerSend is used as fallback only when SMTP fails or is unconfigured.
 # ─────────────────────────────────────────────────────────────────────────────
 
 def initiate_admin_reset(
@@ -378,7 +380,7 @@ def initiate_admin_reset(
 ) -> tuple[bool, str]:
     """
     Initiate admin (non-superadmin) OTP reset.
-    Delivery: email_service.send_otp_email() → MailerSend primary / SMTP fallback.
+    Delivery: smtp_service.send_admin_otp() (SMTP primary) → send_otp_email() (MailerSend fallback).
     """
     if not _recovery_enabled():
         return False, 'Password recovery is currently disabled.'
@@ -411,7 +413,27 @@ def initiate_admin_reset(
     logger.info('[ADMIN RESET] step=otp_generated user_id=%s ttl=%dm', user.id, ttl)
     log_security_event('admin_otp_generated', user, f'Admin OTP record created from ip={ip}', 'info')
 
-    sent = send_otp_email(
+    # ── Tier 1: SMTP primary (mirrors superadmin path) ──────────────────────
+    smtp_ok, smtp_err = smtp_service.send_admin_otp(
+        email=user.email,
+        otp=raw_otp,
+        ip_address=ip,
+        user_agent=ua,
+        ttl_minutes=ttl,
+    )
+    logger.info('[ADMIN RESET] step=smtp_result sent=%s user_id=%s', smtp_ok, user.id)
+
+    if smtp_ok:
+        log_security_event('admin_otp_sent', user, f'Admin OTP delivered via SMTP from ip={ip}', 'info')
+        log_security_event('admin_pw_reset_initiated', user, f'Admin OTP sent from ip={ip}', 'info')
+        return True, generic
+
+    # ── Tier 2: MailerSend fallback ──────────────────────────────────────────
+    logger.warning(
+        '[ADMIN RESET] step=smtp_failed user_id=%s smtp_err=%s — falling back to MailerSend',
+        user.id, smtp_err,
+    )
+    ms_sent = send_otp_email(
         recipient_email=user.email,
         otp=raw_otp,
         user_type='admin',
@@ -419,19 +441,19 @@ def initiate_admin_reset(
         user_agent=ua,
         ttl_minutes=ttl,
     )
-    logger.info('[ADMIN RESET] step=delivery_result sent=%s user_id=%s', sent, user.id)
+    logger.info('[ADMIN RESET] step=mailersend_result sent=%s user_id=%s', ms_sent, user.id)
 
-    if sent:
-        log_security_event('admin_otp_sent', user, f'Admin OTP delivered from ip={ip}', 'info')
-        log_security_event('admin_pw_reset_initiated', user, f'Admin OTP sent from ip={ip}', 'info')
+    if ms_sent:
+        log_security_event('admin_otp_sent', user, f'Admin OTP delivered via MailerSend fallback from ip={ip}', 'info')
+        log_security_event('admin_pw_reset_initiated', user, f'Admin OTP sent (MailerSend fallback) from ip={ip}', 'info')
     else:
         logger.error(
-            '[ADMIN RESET] step=delivery_failed user_id=%s — both MailerSend and SMTP '
-            'fallback failed. Check MAILERSEND_API_KEY / ADMIN_MAILERSEND_API_KEY and '
-            'SMTP_HOST/SMTP_USERNAME/SMTP_PASSWORD/SMTP_FROM_EMAIL.',
+            '[ADMIN RESET] step=delivery_failed user_id=%s — SMTP and MailerSend both failed. '
+            'Check SMTP_HOST/SMTP_USERNAME/SMTP_PASSWORD/SMTP_FROM_EMAIL and '
+            'MAILERSEND_API_KEY / ADMIN_MAILERSEND_API_KEY.',
             user.id,
         )
-        log_security_event('admin_otp_send_failed', user, f'Admin OTP delivery failed from ip={ip}', 'warning')
+        log_security_event('admin_otp_send_failed', user, f'Admin OTP delivery FAILED (all providers) from ip={ip}', 'warning')
 
     return True, generic
 
