@@ -4,6 +4,13 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
+    {# ── Tenant context guards ── #}
+    {# tenant_slug is always passed by both root() and portfolio() routes.      #}
+    {# is_root_domain=True only on the default portfolio at myportfoliohub.online/ #}
+    {# is_owner=True → this is the default portfolio (owner/superadmin page)    #}
+    {% set _tenant_slug = tenant_slug if tenant_slug is defined else 'default' %}
+    {% set is_owner = (is_root_domain is defined and is_root_domain) or (_tenant_slug == 'default') %}
+
     {# ── Title ── #}
     {% set page_title = (profile.meta_title or (profile.name ~ ' — ' ~ (profile.title or 'Portfolio'))) if profile else 'Portfolio' %}
     <title>{{ page_title }}</title>
@@ -304,8 +311,8 @@
                             alt="{% if profile %}{{ profile.name }}{% else %}Portfolio{% endif %}" 
                             class="hero-avatar"
                         >
-                        {% if profile %}
-                        <!-- Administrator Badge: only ever rendered for the portfolio owner -->
+                        {% if profile and is_owner %}
+                        <!-- Administrator Badge: only rendered for the default portfolio owner -->
                         <div class="admin-badge" title="Portfolio Administrator">
                             <iconify-icon icon="lucide:shield-check" width="14"></iconify-icon>
                             <span>Administrator</span>
@@ -449,7 +456,7 @@
                                             <iconify-icon icon="lucide:github" width="18"></iconify-icon>
                                         </a>
                                         {% endif %}
-                                        <a href="{{ url_for('tenant.project_detail', tenant_slug=tenant_slug or active_tenant_slug or 'default', slug=project.slug) }}" class="project-btn" aria-label="View project details">
+                                        <a href="{{ url_for('tenant.project_detail', tenant_slug=_tenant_slug, slug=project.slug) }}" class="project-btn" aria-label="View project details">
                                             <iconify-icon icon="lucide:arrow-right" width="18"></iconify-icon>
                                         </a>
                                     </div>
@@ -485,7 +492,7 @@
                                         Source Code
                                     </a>
                                     {% endif %}
-                                    <a href="{{ url_for('tenant.project_detail', tenant_slug=tenant_slug or active_tenant_slug or 'default', slug=project.slug) }}" class="project-link">
+                                    <a href="{{ url_for('tenant.project_detail', tenant_slug=_tenant_slug, slug=project.slug) }}" class="project-link">
                                         <iconify-icon icon="lucide:arrow-right" width="14"></iconify-icon>
                                         Details
                                     </a>
@@ -541,7 +548,7 @@
                                         <iconify-icon icon="lucide:github" width="18"></iconify-icon>
                                     </a>
                                     {% endif %}
-                                    <a href="{{ url_for('tenant.project_detail', tenant_slug=tenant_slug or active_tenant_slug or 'default', slug=project.slug) }}" class="project-btn" aria-label="View project details">
+                                    <a href="{{ url_for('tenant.project_detail', tenant_slug=_tenant_slug, slug=project.slug) }}" class="project-btn" aria-label="View project details">
                                         <iconify-icon icon="lucide:arrow-right" width="18"></iconify-icon>
                                     </a>
                                 </div>
@@ -576,7 +583,7 @@
                                     Source Code
                                 </a>
                                 {% endif %}
-                                <a href="{{ url_for('tenant.project_detail', tenant_slug=tenant_slug or active_tenant_slug or 'default', slug=project.slug) }}" class="project-link">
+                                <a href="{{ url_for('tenant.project_detail', tenant_slug=_tenant_slug, slug=project.slug) }}" class="project-link">
                                     <iconify-icon icon="lucide:arrow-right" width="14"></iconify-icon>
                                     Details
                                 </a>
@@ -813,7 +820,7 @@
                             id="contactForm"
                             class="contact-form"
                             novalidate
-                            data-fallback-url="{{ contact_url if contact_url else url_for('tenant.contact', tenant_slug=tenant_slug or active_tenant_slug or 'default') }}"
+                            data-fallback-url="{{ contact_url if contact_url else url_for('tenant.contact', tenant_slug=_tenant_slug) }}"
                             aria-label="Contact form"
                         >
                             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
