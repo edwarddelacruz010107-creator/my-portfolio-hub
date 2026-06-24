@@ -9,6 +9,7 @@
   <script src="https://code.iconify.design/iconify-icon/1.0.7/iconify-icon.min.js"></script>
   <link rel="stylesheet" href="{{ url_for('static', filename='css/admin.css') }}"/>
   <link rel="stylesheet" href="{{ url_for('static', filename='css/superadmin.css') }}"/>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/animations.css') }}"/>
   <link rel="icon" href="{{ url_for('static', filename='image/icon.ico') }}" type="image/x-icon">
   {% block extra_css %}{% endblock %}
 </head>
@@ -220,6 +221,7 @@
 </div>
 
 <script src="{{ url_for('static', filename='js/admin.js') }}"></script>
+<script src="{{ url_for('static', filename='js/animations.js') }}" defer></script>
 <script>
 // ── Sidebar toggle (v3.4 hardened) ────────────────────────
 (function() {

@@ -88,6 +88,7 @@
     }
     .theme-toggle:hover { border-color: var(--accent); color: var(--accent-light); }
   </style>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/animations.css') }}">
 </head>
 <body>
   <button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle theme">
@@ -130,5 +131,6 @@
     }
     initTheme();
   </script>
+<script src="{{ url_for('static', filename='js/animations.js') }}" defer></script>
 </body>
 </html>

@@ -59,7 +59,7 @@
   </div>
 
   {# ── Stats Row ────────────────────────────────────────── #}
-  <div class="stats-row" style="grid-template-columns:repeat(auto-fill,minmax(180px,1fr))">
+  <div class="stats-row stagger-children reveal-fade" style="grid-template-columns:repeat(auto-fill,minmax(180px,1fr))">
 
     <div class="stat-card-v2">
       <div class="stat-header">
@@ -67,7 +67,7 @@
           <iconify-icon icon="lucide:users" width="18"></iconify-icon>
         </div>
       </div>
-      <div class="stat-big">{{ stats.total_tenants }}</div>
+      <div class="stat-big" data-count="{{ stats.total_tenants }}">{{ stats.total_tenants }}</div>
       <div class="stat-name">Total Tenants</div>
       <div class="stat-footer"><span class="stat-sub">Platform profiles</span></div>
     </div>
@@ -78,7 +78,7 @@
           <iconify-icon icon="lucide:user-check" width="18"></iconify-icon>
         </div>
       </div>
-      <div class="stat-big">{{ stats.active_tenants }}</div>
+      <div class="stat-big" data-count="{{ stats.active_tenants }}">{{ stats.active_tenants }}</div>
       <div class="stat-name">Active Tenants</div>
       <div class="stat-footer">
         {% if stats.total_tenants > 0 %}
@@ -108,7 +108,7 @@
           <iconify-icon icon="lucide:clock" width="18"></iconify-icon>
         </div>
       </div>
-      <div class="stat-big">{{ stats.pending_payments }}</div>
+      <div class="stat-big" data-count="{{ stats.pending_payments }}">{{ stats.pending_payments }}</div>
       <div class="stat-name">Pending Payments</div>
       <div class="stat-footer"><span class="stat-sub">Awaiting review</span></div>
     </div>
@@ -119,7 +119,7 @@
           <iconify-icon icon="lucide:alert-triangle" width="18"></iconify-icon>
         </div>
       </div>
-      <div class="stat-big">{{ stats.expiring_accounts }}</div>
+      <div class="stat-big" data-count="{{ stats.expiring_accounts }}">{{ stats.expiring_accounts }}</div>
       <div class="stat-name">Expiring Soon</div>
       <div class="stat-footer"><span class="stat-sub">Due in 30 days</span></div>
     </div>
@@ -130,7 +130,7 @@
           <iconify-icon icon="lucide:x-circle" width="18"></iconify-icon>
         </div>
       </div>
-      <div class="stat-big">{{ stats.expired_accounts }}</div>
+      <div class="stat-big" data-count="{{ stats.expired_accounts }}">{{ stats.expired_accounts }}</div>
       <div class="stat-name">Expired</div>
       <div class="stat-footer"><span class="stat-sub">Past-due subscriptions</span></div>
     </div>

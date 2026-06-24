@@ -245,6 +245,7 @@
             .login-btn { width: 100%; }
         }
     </style>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/animations.css') }}">
 </head>
 <body>
 
@@ -333,6 +334,6 @@
         submitBtn.textContent = 'Signing in…';
     });
 </script>
-
+<script src="{{ url_for('static', filename='js/animations.js') }}" defer></script>
 </body>
 </html>

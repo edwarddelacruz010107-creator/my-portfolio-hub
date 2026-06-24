@@ -38,6 +38,7 @@
 
     .error-icon-wrap{background:rgba(239,68,68,0.1);border:1px solid rgbaa(f87171; }
   </style>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/animations.css') }}">
 </head>
 <body>
   <div class="bg-orb bg-orb-1"></div>
@@ -70,5 +71,6 @@
     function toggleTheme(){const cur=document.documentElement.getAttribute('data-theme');const next=cur==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',next);localStorage.setItem(THEME_KEY,next);document.getElementById('moonIcon').style.display=next==='dark'?'inline-block':'none';document.getElementById('sunIcon').style.display=next==='light'?'inline-block':'none';}
     initTheme();
 </script>
+<script src="{{ url_for('static', filename='js/animations.js') }}" defer></script>
 </body>
 </html>

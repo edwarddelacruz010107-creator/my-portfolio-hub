@@ -10,6 +10,7 @@
   <script src="https://code.iconify.design/iconify-icon/1.0.7/iconify-icon.min.js" defer></script>
   <script src="https://unpkg.com/iconify-icon@1.0.7/dist/iconify-icon.min.js" defer></script>
   <link rel="stylesheet" href="{{ url_for('static', filename='css/admin.css') }}"/>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/animations.css') }}"/>
   {% block extra_css %}{% endblock %}
   <link rel="icon" href="{{ url_for('static', filename='image/icon.ico') }}" type="image/x-icon">
 </head>
@@ -311,6 +312,7 @@
   });
 </script>
 <script src="{{ url_for('static', filename='js/admin.js') }}"></script>
+<script src="{{ url_for('static', filename='js/animations.js') }}" defer></script>
 {% block extra_js %}{% endblock %}
 
 </html>

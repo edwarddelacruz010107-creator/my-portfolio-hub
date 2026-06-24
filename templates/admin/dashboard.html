@@ -57,14 +57,14 @@
   </div>
 
   {# ── Stats Row ────────────────────────────────────────── #}
-  <div class="stats-row">
+  <div class="stats-row stagger-children reveal-fade">
     <div class="stat-card-v2">
       <div class="stat-header">
         <div class="stat-icon-wrap accent">
           <iconify-icon icon="lucide:folder" width="18"></iconify-icon>
         </div>
       </div>
-      <div class="stat-big">{{ stats.total_projects }}</div>
+      <div class="stat-big" data-count="{{ stats.total_projects }}">{{ stats.total_projects }}</div>
       <div class="stat-name">Total Projects</div>
       <div class="stat-footer">
         <span class="trend trend-up">
@@ -80,7 +80,7 @@
           <iconify-icon icon="lucide:award" width="18"></iconify-icon>
         </div>
       </div>
-      <div class="stat-big">{{ stats.total_skills }}</div>
+      <div class="stat-big" data-count="{{ stats.total_skills }}">{{ stats.total_skills }}</div>
       <div class="stat-name">Skills</div>
       <div class="stat-footer">
         <span class="stat-sub">across all categories</span>
@@ -93,7 +93,7 @@
           <iconify-icon icon="lucide:star" width="18"></iconify-icon>
         </div>
       </div>
-      <div class="stat-big">{{ stats.total_testimonials }}</div>
+      <div class="stat-big" data-count="{{ stats.total_testimonials }}">{{ stats.total_testimonials }}</div>
       <div class="stat-name">Testimonials</div>
       <div class="stat-footer">
         <span class="stat-sub">social proof</span>
@@ -145,7 +145,7 @@
           <iconify-icon icon="lucide:mail{% if stats.unread_messages %}-open{% endif %}" width="18"></iconify-icon>
         </div>
       </div>
-      <div class="stat-big">{{ stats.unread_messages }}</div>
+      <div class="stat-big" data-count="{{ stats.unread_messages }}">{{ stats.unread_messages }}</div>
       <div class="stat-name">Unread Messages</div>
       <div class="stat-footer">
         {% if stats.unread_messages %}
@@ -162,7 +162,7 @@
           <iconify-icon icon="lucide:inbox" width="18"></iconify-icon>
         </div>
       </div>
-      <div class="stat-big">{{ stats.total_messages }}</div>
+      <div class="stat-big" data-count="{{ stats.total_messages }}">{{ stats.total_messages }}</div>
       <div class="stat-name">Total Messages</div>
       <div class="stat-footer">
         <span class="stat-sub">all time</span>
@@ -175,7 +175,7 @@
           <iconify-icon icon="lucide:calendar-check" width="18"></iconify-icon>
         </div>
       </div>
-      <div class="stat-big">{{ stats.today_messages }}</div>
+      <div class="stat-big" data-count="{{ stats.today_messages }}">{{ stats.today_messages }}</div>
       <div class="stat-name">Today's Messages</div>
       <div class="stat-footer">
         <span class="stat-sub">since midnight UTC</span>
@@ -188,7 +188,7 @@
           <iconify-icon icon="lucide:calendar-days" width="18"></iconify-icon>
         </div>
       </div>
-      <div class="stat-big">{{ stats.week_messages }}</div>
+      <div class="stat-big" data-count="{{ stats.week_messages }}">{{ stats.week_messages }}</div>
       <div class="stat-name">Last 7 Days</div>
       <div class="stat-footer">
         <span class="stat-sub">rolling window</span>
