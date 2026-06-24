@@ -254,6 +254,7 @@ class ProductionConfig(BaseConfig):
 
     DEBUG   = False
     TESTING = False
+    PROPAGATE_EXCEPTIONS = False   # SECURITY: never let raw exceptions propagate to WSGI layer
 
     PREFERRED_URL_SCHEME = "https"
 
