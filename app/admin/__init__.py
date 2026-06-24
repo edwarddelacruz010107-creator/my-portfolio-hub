@@ -293,11 +293,25 @@ def block_public_admin():
       • tenant == 'default' or tenant == ''  → auth.verify_2fa  (correct path)
       • tenant is a real slug                → tenant.auth_2fa  (unchanged)
 
-    FIX v3.4.2 — Session correction logging
-    ────────────────────────────────────────
-    Session mismatch corrections are now logged at INFO level so they appear in
-    application logs and can be diagnosed without attaching a debugger.
+    FIX v5.7 — Forgot-password routes were never exempted
+    ────────────────────────────────────────────────────────
+    block_public_admin() ran unconditionally on every /admin/* request,
+    including the three public forgot-password endpoints. An unauthenticated
+    visitor clicking "Forgot your password?" hit this hook, failed the
+    is_authenticated check below, and was bounced straight back to
+    auth.login with next=<the forgot-password URL they just came from> —
+    i.e. the link appeared completely unresponsive (URL changes, page does
+    not). This is now exempted by endpoint name before any auth check runs.
     """
+    # ── Public-endpoint exemption — MUST run before any auth/session logic ──
+    _PUBLIC_ADMIN_ENDPOINTS = {
+        'admin.forgot_password',
+        'admin.forgot_password_verify',
+        'admin.forgot_password_reset',
+    }
+    if request.endpoint in _PUBLIC_ADMIN_ENDPOINTS:
+        return None  # let the route's own logic run unauthenticated
+
     # Check authentication: also treat as unauthenticated when the session
     # has no '_user_id' key (guards against Flask-Login's app-level user cache
     # leaking between test clients on a session-scoped test app, and handles
@@ -1807,16 +1821,22 @@ def forgot_password():
     from flask import session as _session
     form = ForgotPasswordForm()
     if request.method == 'POST':
+        logger.info('[ADMIN RESET][route] POST received at /admin/forgot-password')
         if not form.validate_on_submit():
+            logger.warning(
+                '[ADMIN RESET][route] validate_on_submit() FAILED — csrf_or_field_errors=%s',
+                form.errors,
+            )
             flash('Form validation failed. Please try again.', 'danger')
             return render_template('admin/forgot_password_request.html', form=form)
+        logger.info('[ADMIN RESET][route] validate_on_submit() OK (CSRF + field validators passed)')
         from app.services.password_reset_service import initiate_admin_reset
         email    = request.form.get('email', '').strip().lower()
         username = request.form.get('username', '').strip()
         if not email or not username:
             flash('Username and email are both required.', 'danger')
             return render_template('admin/forgot_password_request.html', form=form)
-        
+
         ok, msg = initiate_admin_reset(email, username)
         flash(msg, 'info' if ok else 'danger')
         if ok:
@@ -1880,7 +1900,7 @@ def forgot_password_reset():
         if ok:
             _session.pop('_admin_pw_reset_email', None)
             _session.pop('_admin_pw_reset_token', None)
-            return redirect(url_for('admin.login'))
+            return redirect(url_for('admin.login_alias'))
 
     return render_template('admin/forgot_password_reset.html')
 

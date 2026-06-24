@@ -2046,13 +2046,16 @@ def forgot_password_request():
         return redirect(url_for('superadmin.dashboard'))
 
     if request.method == 'POST':
+        logger.info('[SUPERADMIN RESET][route] POST received at /superadmin/forgot-password/request')
         from app.services.password_reset_service import initiate_superadmin_reset
         email    = request.form.get('email', '').strip().lower()
         username = request.form.get('username', '').strip()
         if not email or not username:
+            logger.warning('[SUPERADMIN RESET][route] missing required field(s) — username_present=%s email_present=%s', bool(username), bool(email))
             flash('Username and email are both required.', 'danger')
             return render_template('superadmin/forgot_password_request.html')
         ok, msg = initiate_superadmin_reset(email, username)
+        logger.info('[SUPERADMIN RESET][route] initiate_superadmin_reset() returned ok=%s', ok)
         flash(msg, 'info' if ok else 'danger')
         if ok:
             from flask import session as _session

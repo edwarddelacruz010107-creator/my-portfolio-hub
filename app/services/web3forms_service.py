@@ -29,8 +29,10 @@ from __future__ import annotations
 
 import logging
 import os
+import smtplib
 import time
 from datetime import datetime, timezone
+from email.mime.text import MIMEText
 from typing import Optional
 
 import requests
@@ -163,6 +165,94 @@ def _post_with_retry(payload: dict) -> tuple[bool, str]:
     return False, last_error
 
 
+def _get_smtp_config() -> dict:
+    """
+    Resolve SMTP credentials from environment.
+    Mirrors the same env var names used by email_service.py for consistency.
+    Required vars:
+      SMTP_USERNAME   — sender Gmail/SMTP address
+      SMTP_PASSWORD   — Gmail App Password (16-char, spaces stripped) or SMTP password
+      SMTP_FROM_EMAIL — optional; falls back to SMTP_USERNAME if unset
+    Optional:
+      SMTP_HOST     — defaults to smtp.gmail.com
+      SMTP_PORT     — defaults to 587 (STARTTLS)
+    """
+    username = os.environ.get("SMTP_USERNAME", "").strip()
+    return {
+        "host":       os.environ.get("SMTP_HOST", "smtp.gmail.com"),
+        "port":       int(os.environ.get("SMTP_PORT", "587")),
+        "user":       username,
+        "password":   os.environ.get("SMTP_PASSWORD", "").strip().replace(" ", ""),
+        "from_email": os.environ.get("SMTP_FROM_EMAIL", username),
+    }
+
+
+def _send_via_smtp_fallback(
+    recipient: str,
+    subject: str,
+    body: str,
+    from_name: str = "Portfolio CMS Security",
+) -> tuple[bool, str]:
+    """
+    Send email via Gmail SMTP (STARTTLS) as fallback when Web3Forms is unavailable.
+
+    Uses stdlib smtplib — no additional dependencies.
+    Credentials sourced exclusively from env vars SMTP_USER / SMTP_PASSWORD.
+    Never logs credentials or OTP body content.
+
+    Returns:
+        (True, "delivered") on success.
+        (False, safe_error_message) on any failure.
+    """
+    cfg = _get_smtp_config()
+
+    if not cfg["user"] or not cfg["password"]:
+        logger.critical(
+            "smtp_fallback: SMTP_USERNAME or SMTP_PASSWORD not configured — "
+            "fallback delivery impossible. Set SMTP_USERNAME and SMTP_PASSWORD."
+        )
+        return False, "Email service is not configured. Contact your system administrator."
+
+    msg = MIMEText(body, "plain", "utf-8")
+    msg["Subject"] = subject
+    msg["From"]    = f"{from_name} <{cfg['from_email']}>"
+    msg["To"]      = recipient
+
+    try:
+        logger.info(
+            "smtp_fallback: connecting to %s:%s as %s",
+            cfg["host"], cfg["port"], cfg["user"],
+        )
+        with smtplib.SMTP(cfg["host"], cfg["port"], timeout=15) as server:
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+            server.login(cfg["user"], cfg["password"])
+            server.sendmail(cfg["from_email"], [recipient], msg.as_string())
+        logger.info("smtp_fallback: OTP delivered successfully to recipient=%s", recipient)
+        return True, "delivered"
+
+    except smtplib.SMTPAuthenticationError:
+        logger.error(
+            "smtp_fallback: authentication failed for SMTP_USERNAME=%s — "
+            "verify App Password is correct and 2FA is enabled on Gmail.",
+            cfg["user"],
+        )
+        return False, "Unable to send OTP right now. Please try again later."
+
+    except smtplib.SMTPException as exc:
+        logger.error("smtp_fallback: SMTPException — %s", type(exc).__name__)
+        return False, "Unable to send OTP right now. Please try again later."
+
+    except OSError as exc:
+        logger.error("smtp_fallback: connection error — %s", exc)
+        return False, "Unable to reach email service. Please check connectivity."
+
+    except Exception:  # noqa: BLE001
+        logger.exception("smtp_fallback: unexpected error during SMTP delivery")
+        return False, "Unable to send OTP right now. Please try again later."
+
+
 def send_superadmin_otp_web3forms(
     email: str,
     otp: str,
@@ -228,6 +318,8 @@ def send_superadmin_otp_web3forms(
 
     payload: dict = {
         "access_key": access_key,
+        "email": recipient,       # explicit To: override — required by Web3Forms API
+        "to": recipient,          # safer fallback field; Web3Forms accepts both
         "subject": f"[Portfolio CMS] Superadmin Password Reset OTP — {now_str}",
         "from_name": "Portfolio CMS Security",
         "message": body,
@@ -235,6 +327,11 @@ def send_superadmin_otp_web3forms(
         "redirect": "false",
     }
 
+    # Diagnostic log — confirms recipient resolution before network I/O
+    logger.info(
+        "web3forms: sending OTP to recipient=%s",
+        recipient,
+    )
     logger.info(
         "web3forms: dispatching superadmin OTP (account=%s ip=%s)",
         email, ip_address or "unknown",
@@ -246,12 +343,33 @@ def send_superadmin_otp_web3forms(
         logger.info(
             "web3forms: superadmin OTP delivered successfully (account=%s)", email
         )
-    else:
-        logger.error(
-            "web3forms: superadmin OTP delivery FAILED (account=%s) — %s", email, msg
-        )
+        return True, "delivered"
 
-    return ok, msg
+    # Web3Forms failed (e.g. 403 server-side block on free plan) — attempt SMTP fallback
+    logger.warning(
+        "web3forms: primary delivery failed (%s) — attempting SMTP fallback (account=%s)",
+        msg, email,
+    )
+    now_str_fb = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    ok_fb, msg_fb = _send_via_smtp_fallback(
+        recipient=recipient,
+        subject=f"[Portfolio CMS] Superadmin Password Reset OTP — {now_str_fb}",
+        body=body,
+    )
+
+    if ok_fb:
+        logger.info(
+            "smtp_fallback: superadmin OTP delivered via SMTP (account=%s)", email
+        )
+        return True, "delivered"
+
+    # Both delivery paths exhausted
+    logger.error(
+        "web3forms+smtp_fallback: all delivery paths FAILED (account=%s) "
+        "web3forms_err=%s smtp_err=%s",
+        email, msg, msg_fb,
+    )
+    return False, msg
 
 
 def send_superadmin_security_alert(

@@ -1,15 +1,27 @@
 """
-app/services/email_service.py — Production Email Service (v5.7)
+app/services/email_service.py — Production Email Service (v5.7.1)
 
-Architecture:
-  PRIMARY  → SMTP         (smtplib — zero external dependency)
-  FALLBACK → MailerSend   (existing mailersend_service, untouched)
+SCOPE: This module serves the TENANT and ADMIN reset/notification flows
+ONLY. Superadmin OTP delivery does NOT use this module — see
+app/services/smtp_service.py for the fully isolated superadmin path.
+
+Architecture (v5.7.1 — corrected provider order):
+  PRIMARY  → MailerSend   (existing mailersend_service, untouched)
+  FALLBACK → SMTP         (smtplib — zero external dependency)
+
+  NOTE: v5.7 shipped with this order reversed (SMTP primary / MailerSend
+  fallback). That was inconsistent with the platform's email architecture
+  decision (MailerSend is the managed, deliverability-monitored provider
+  for tenant/admin; SMTP is the resilience fallback, not the default). This
+  revision restores MailerSend-primary / SMTP-fallback. If your environment
+  has SMTP_ENABLED=true and was relying on the old SMTP-first behavior,
+  see the v5.7.1 migration note in the deployment changelog before deploying.
 
 Delivery flow per send attempt:
-  1. SMTP enabled & configured? → attempt SMTP
+  1. MailerSend configured? → attempt MailerSend
        Success → return True
-       Failure → log, fall through to MailerSend
-  2. MailerSend configured? → attempt MailerSend
+       Failure → log, fall through to SMTP
+  2. SMTP enabled & configured? → attempt SMTP
        Success → return True
        Failure → log, return False
   3. Neither configured → log critical, return False
@@ -279,26 +291,37 @@ class EmailService:
         Returns:
             (True, 'delivered') on success, (False, error_message) on failure.
         """
-        # ── Tier 1: SMTP ──────────────────────────────────────────────
-        if _smtp_enabled() and _smtp_is_configured():
-            ok, err = _send_via_smtp(to, subject, text, html=html, to_name=to_name, reply_to=reply_to)
-            if ok:
-                return True, 'delivered'
-            logger.warning(
-                'email: SMTP failed (%s), falling through to MailerSend fallback', err
-            )
-
-        # ── Tier 2: MailerSend fallback ───────────────────────────────
-        ok, err = _send_via_mailersend(to, subject, text, html=html, to_name=to_name, reply_to=reply_to, portal=portal)
-        if ok:
+        # ── Tier 1: MailerSend (primary) ────────────────────────────────
+        ms_ok, ms_err = _send_via_mailersend(
+            to, subject, text, html=html, to_name=to_name, reply_to=reply_to, portal=portal,
+        )
+        if ms_ok:
             return True, 'delivered'
 
-        # ── Tier 3: Both providers exhausted ─────────────────────────
-        logger.critical(
-            'email: ALL PROVIDERS FAILED — to=%s subject="%s" last_error=%s',
-            to, subject[:60], err,
+        logger.warning(
+            'email: MailerSend failed portal=%s (%s) — falling through to SMTP fallback',
+            portal, ms_err,
         )
-        return False, err
+
+        # ── Tier 2: SMTP (fallback) ──────────────────────────────────────
+        if _smtp_enabled() and _smtp_is_configured():
+            sm_ok, sm_err = _send_via_smtp(to, subject, text, html=html, to_name=to_name, reply_to=reply_to)
+            if sm_ok:
+                logger.info(
+                    'email: SMTP fallback succeeded portal=%s to=%s (MailerSend had failed: %s)',
+                    portal, to, ms_err,
+                )
+                return True, 'delivered'
+            final_err = sm_err
+        else:
+            final_err = f'{ms_err}; SMTP fallback unavailable (SMTP_ENABLED unset or incomplete config)'
+
+        # ── Tier 3: Both providers exhausted ─────────────────────────────
+        logger.critical(
+            'email: ALL PROVIDERS FAILED — portal=%s to=%s subject="%s" last_error=%s',
+            portal, to, subject[:60], final_err,
+        )
+        return False, final_err
 
     def _send_via_smtp(self, *args, **kwargs) -> tuple[bool, str]:
         """Expose internal SMTP primitive (used by health_check)."""
@@ -355,8 +378,8 @@ class EmailService:
         return {
             'smtp':        smtp_status,
             'mailersend':  ms_status,
-            'primary':     'smtp' if (_smtp_enabled() and _smtp_is_configured()) else 'mailersend',
-            'fallback':    'mailersend' if ms_status['configured'] else 'none',
+            'primary':     'mailersend' if ms_status['configured'] else ('smtp' if (_smtp_enabled() and _smtp_is_configured()) else 'none'),
+            'fallback':    'smtp' if (_smtp_enabled() and _smtp_is_configured()) else 'none',
         }
 
     def validate_configuration(self) -> list[str]:
@@ -375,16 +398,16 @@ class EmailService:
         except Exception:
             pass
 
+        if not ms_ok:
+            warnings.append('MailerSend not configured — set MAILERSEND_API_KEY or configure via Superadmin → Email Settings (this is the PRIMARY provider for tenant/admin)')
+
         if not smtp_ok:
             if _smtp_enabled():
                 cfg = _smtp_config()
                 missing = [k for k in ('host', 'username', 'password', 'from_email') if not cfg[k]]
-                warnings.append(f'SMTP enabled but missing: {", ".join(missing).upper()}')
+                warnings.append(f'SMTP fallback enabled but missing: {", ".join(missing).upper()}')
             else:
-                warnings.append('SMTP_ENABLED is not set — SMTP delivery unavailable')
-
-        if not ms_ok:
-            warnings.append('MailerSend not configured — set MAILERSEND_API_KEY or configure via Superadmin → Email Settings')
+                warnings.append('SMTP_ENABLED is not set — fallback delivery unavailable if MailerSend fails')
 
         if not smtp_ok and not ms_ok:
             warnings.append('CRITICAL: No email provider is configured — OTP/password-reset delivery will fail')
@@ -433,7 +456,8 @@ def send_otp_email(
     Send an OTP password-reset code.
 
     Backward-compatible with the signature in mailersend_service.send_otp_email().
-    Routes: SMTP (primary) → MailerSend (fallback).
+    Routes: MailerSend (primary) → SMTP (fallback). Used by tenant + admin
+    flows only — superadmin uses smtp_service.send_superadmin_otp() exclusively.
 
     Args:
         recipient_email: Destination address.
@@ -601,17 +625,17 @@ def init_email_services(app) -> None:
         smtp_s = health['smtp']
         ms_s   = health['mailersend']
 
-        app.logger.info('─── Email Service (v5.7) ───────────────────────────')
+        app.logger.info('─── Email Service (v5.7.1) ─────────────────────────')
+        app.logger.info(
+            '  MailerSend: %s  key_len=%s',
+            ms_s['status'].upper(),
+            ms_s.get('key_length', 'N/A'),
+        )
         app.logger.info(
             '  SMTP      : %s  host=%s port=%s',
             smtp_s['status'].upper(),
             smtp_s.get('host', 'N/A'),
             smtp_s.get('port', 'N/A'),
-        )
-        app.logger.info(
-            '  MailerSend: %s  key_len=%s',
-            ms_s['status'].upper(),
-            ms_s.get('key_length', 'N/A'),
         )
         app.logger.info(
             '  Primary=%s  Fallback=%s',

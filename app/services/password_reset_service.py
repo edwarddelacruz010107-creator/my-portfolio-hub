@@ -1,28 +1,36 @@
 """
-app/services/password_reset_service.py — Password reset orchestration (v4.0)
+app/services/password_reset_service.py — Password reset orchestration (v5.7)
 
-PATCH v4.0 (superadmin OTP exclusively via Web3Forms):
-  • _send_superadmin_otp() now calls ONLY web3forms_service.send_superadmin_otp().
-  • The MailerSend / send_otp_email() FALLBACK has been REMOVED from the
-    superadmin path entirely. Web3Forms is now the sole delivery mechanism.
-  • WEB3FORMS_ACCESS_KEY absence is treated as a hard configuration error
-    (logged at ERROR level), not silently skipped.
-  • Zero change to admin / tenant reset flows.
+PATCH v5.7 (Web3Forms eliminated from the superadmin path):
+  • Web3Forms returns HTTP 403 ("Pro plan required for server-side use") for
+    this deployment's account tier. It is no longer viable for ANY OTP
+    delivery and has been removed from the superadmin flow entirely.
+  • _send_superadmin_otp() now calls ONLY smtp_service.send_superadmin_otp().
+    There is no fallback for superadmin by design — see ISOLATION CONTRACT
+    in that function's docstring.
+  • web3forms_service.py is retired (kept as a deprecated stub — see file
+    header — to avoid breaking any stray import during rollout).
+  • Tenant / Admin flows are unaffected by the Web3Forms removal (they
+    never used it) but their delivery order has been corrected in
+    email_service.py v5.7.1: MailerSend is now PRIMARY, SMTP is FALLBACK
+    (previously reversed — see that module's changelog).
+  • Structured, step-level logging added to admin + tenant initiate
+    functions per the v5.7 observability requirement. Behavior unchanged.
   • Zero schema changes.
 
-DELIVERY MATRIX (v4.0):
-    ┌──────────────────────┬───────────────────────────────────┐
-    │ Portal               │ OTP Delivery                      │
-    ├──────────────────────┼───────────────────────────────────┤
-    │ TENANT               │ email_service.send_otp_email()    │
-    │                      │ → SMTP primary / MailerSend fallb │
-    ├──────────────────────┼───────────────────────────────────┤
-    │ ADMIN                │ email_service.send_otp_email()    │
-    │                      │ → SMTP primary / MailerSend fallb │
-    ├──────────────────────┼───────────────────────────────────┤
-    │ SUPERADMIN           │ web3forms_service.send_superadmin_otp()  ONLY  │
-    │                      │ NO MailerSend. NO SMTP. NO fallback.           │
-    └──────────────────────┴────────────────────────────────────────────────┘
+DELIVERY MATRIX (v5.7):
+    ┌──────────────────────┬─────────────────────────────────────────────┐
+    │ Portal               │ OTP Delivery                                │
+    ├──────────────────────┼─────────────────────────────────────────────┤
+    │ TENANT               │ email_service.send_otp_email()              │
+    │                      │ → MailerSend primary / SMTP fallback        │
+    ├──────────────────────┼─────────────────────────────────────────────┤
+    │ ADMIN                │ email_service.send_otp_email()              │
+    │                      │ → MailerSend primary / SMTP fallback        │
+    ├──────────────────────┼─────────────────────────────────────────────┤
+    │ SUPERADMIN           │ smtp_service.send_superadmin_otp()  ONLY     │
+    │                      │ NO MailerSend. NO Web3Forms. NO fallback.   │
+    └──────────────────────┴─────────────────────────────────────────────┘
 
 Three completely isolated reset flows:
     A. Superadmin  — /superadmin/forgot-password
@@ -42,16 +50,27 @@ Security:
     • Reset token: SHA-256 hashed in DB, short TTL
     • Session token rotated on password change → existing sessions invalidated
     • Superadmin flow is completely isolated from tenant/admin tables/slugs/keys
+    • Rate limiting enforced at the Flask route layer (Flask-Limiter) — see
+      app/superadmin/__init__.py and app/admin/__init__.py decorators:
+      5 OTP requests/hour/email-equivalent route, 10/hour/IP-equivalent route.
 
-Audit events:
-    sa_pw_reset_initiated  — OTP generated and sent (superadmin)
-    sa_otp_failed          — OTP verification failed (superadmin)
-    sa_otp_verified        — OTP verified (superadmin)
-    sa_pw_reset_complete   — Password changed (superadmin)
-    w3f_otp_delivered      — Web3Forms accepted OTP (logged in web3forms_service)
-    w3f_otp_rejected       — Web3Forms rejected OTP (logged in web3forms_service)
-    admin_pw_reset_*       — Admin flow events
-    tenant_pw_reset_*      — Tenant flow events
+Audit events (emitted via app.security.log_security_event — structured log,
+not a DB table):
+    sa_otp_generated        — OTP record created (superadmin)
+    sa_otp_sent             — SMTP accepted superadmin OTP for delivery
+    sa_otp_send_failed      — SMTP delivery failed for superadmin OTP
+    sa_pw_reset_initiated   — alias of sa_otp_sent, kept for dashboard compat
+    sa_otp_failed           — OTP verification failed (superadmin)
+    sa_otp_verified         — OTP verified (superadmin)
+    sa_pw_reset_complete    — Password changed (superadmin)
+    admin_otp_generated     — OTP record created (admin)
+    admin_otp_sent          — MailerSend or SMTP accepted admin OTP
+    admin_otp_send_failed   — both providers failed for admin OTP
+    admin_pw_reset_*        — legacy admin flow events (unchanged)
+    tenant_otp_generated    — OTP record created (tenant)
+    tenant_otp_sent         — MailerSend or SMTP accepted tenant OTP
+    tenant_otp_send_failed  — both providers failed for tenant OTP
+    tenant_pw_reset_*       — legacy tenant flow events (unchanged)
 """
 import hashlib
 import logging
@@ -66,6 +85,7 @@ from app.models.portfolio import Tenant, GlobalEmailConfig
 from app.services.otp_service import create_otp_record, verify_otp
 from app.services.email_service import send_otp_email
 from app.security import log_security_event
+from app.services import smtp_service
 
 logger = logging.getLogger(__name__)
 
@@ -133,7 +153,7 @@ def _apply_password_change(user: User, new_password: str) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# A. Superadmin reset — Web3Forms ONLY
+# A. Superadmin reset — SMTP ONLY
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _send_superadmin_otp(
@@ -142,65 +162,44 @@ def _send_superadmin_otp(
     ip_address: str,
     user_agent: str,
     ttl_minutes: int,
-) -> bool:
+) -> tuple[bool, str]:
     """
-    Deliver superadmin OTP via Web3Forms HTTP API.
+    Deliver superadmin OTP via SMTP — the ONLY transport for this path.
 
     ISOLATION CONTRACT:
         • ONLY called from initiate_superadmin_reset().
-        • NEVER uses send_otp_email(), MailerSend, or SMTP.
+        • NEVER uses send_otp_email(), MailerSend, or Web3Forms.
         • NEVER touches tenant_slug, tenant_id, or any tenant table.
-        • NEVER reads admin or tenant MailerSend credentials.
+        • NEVER reads admin or tenant MailerSend credentials, and never
+          reads GlobalEmailConfig — smtp_service resolves configuration
+          from environment variables only.
 
-    If WEB3FORMS_ACCESS_KEY is absent from the environment this is a hard
-    configuration error — the function logs at ERROR level and returns False.
-    There is NO silent fallback to MailerSend or SMTP for the superadmin path.
+    If SMTP_HOST/USERNAME/PASSWORD/FROM_EMAIL are not fully set this is a
+    hard configuration error. smtp_service.send_email() returns
+    (False, <reason>) in that case — logged at ERROR level here. There is
+    NO silent fallback to MailerSend or Web3Forms for the superadmin path.
+
+    Returns (sent: bool, error_or_empty: str).
     """
-    import os
-    w3f_key = os.environ.get("WEB3FORMS_ACCESS_KEY", "").strip()
+    ok, err = smtp_service.send_superadmin_otp(
+        email=email,
+        otp=otp,
+        ip_address=ip_address,
+        user_agent=user_agent,
+        ttl_minutes=ttl_minutes,
+    )
 
-    if not w3f_key:
-        logger.error(
-            "_send_superadmin_otp [CRITICAL]: WEB3FORMS_ACCESS_KEY is not set. "
-            "Superadmin OTP delivery is impossible. "
-            "Set WEB3FORMS_ACCESS_KEY in .env immediately. "
-            "There is NO fallback — MailerSend is NOT used for superadmin OTP."
-        )
-        return False
+    if ok:
+        logger.info('_send_superadmin_otp: OTP delivered via SMTP to=%s', email)
+        return True, ''
 
-    try:
-        from app.services.web3forms_service import send_superadmin_otp
-        ok, err = send_superadmin_otp(
-            email=email,
-            otp=otp,
-            ip_address=ip_address,
-            user_agent=user_agent,
-            ttl_minutes=ttl_minutes,
-        )
-        if ok:
-            logger.info(
-                "_send_superadmin_otp: OTP delivered via Web3Forms to=%s", email
-            )
-            return True
-
-        logger.error(
-            "_send_superadmin_otp: Web3Forms delivery FAILED for superadmin OTP "
-            "to=%s reason=%s — NO fallback configured",
-            email, err,
-        )
-        return False
-
-    except ImportError as exc:
-        logger.error(
-            "_send_superadmin_otp: failed to import web3forms_service: %s", exc
-        )
-        return False
-
-    except Exception as exc:
-        logger.error(
-            "_send_superadmin_otp: unexpected error calling web3forms_service: %s", exc
-        )
-        return False
+    logger.error(
+        '_send_superadmin_otp: SMTP delivery FAILED for superadmin OTP to=%s '
+        'reason=%s — NO fallback configured (check SMTP_HOST/USERNAME/'
+        'PASSWORD/FROM_EMAIL)',
+        email, err,
+    )
+    return False, err
 
 
 def initiate_superadmin_reset(
@@ -218,7 +217,7 @@ def initiate_superadmin_reset(
     Anti-enumeration: always returns the same generic message regardless of
     whether the account exists.  Attacker learns nothing from the response.
 
-    OTP delivery: Web3Forms ONLY.  MailerSend is never consulted.
+    OTP delivery: SMTP ONLY.  MailerSend and Web3Forms are never consulted.
 
     Returns (sent: bool, message: str).
     """
@@ -267,9 +266,13 @@ def initiate_superadmin_reset(
     )
     db.session.commit()
 
-    logger.info('[SUPERADMIN RESET] OTP record created user_id=%s ttl=%dm', user.id, ttl)
+    logger.info('[SUPERADMIN RESET] step=otp_generated user_id=%s ttl=%dm', user.id, ttl)
+    log_security_event(
+        'sa_otp_generated', user,
+        f'Superadmin OTP record created from ip={ip}', 'info',
+    )
 
-    sent = _send_superadmin_otp(
+    sent, err = _send_superadmin_otp(
         email=user.email,
         otp=raw_otp,
         ip_address=ip,
@@ -277,22 +280,27 @@ def initiate_superadmin_reset(
         ttl_minutes=ttl,
     )
 
-    logger.info('[SUPERADMIN RESET] OTP delivery result=%s user_id=%s', sent, user.id)
+    logger.info('[SUPERADMIN RESET] step=otp_delivery_result sent=%s user_id=%s', sent, user.id)
 
     if sent:
         log_security_event(
+            'sa_otp_sent', user,
+            f'Superadmin OTP sent via SMTP from ip={ip}', 'info',
+        )
+        # Back-compat alias for any existing dashboards/alerts keyed on the old event name
+        log_security_event(
             'sa_pw_reset_initiated', user,
-            f'Superadmin OTP sent via Web3Forms from ip={ip}', 'info',
+            f'Superadmin OTP sent via SMTP from ip={ip}', 'info',
         )
     else:
         logger.error(
-            '[SUPERADMIN RESET] Web3Forms OTP delivery FAILED for user_id=%s. '
-            'Check WEB3FORMS_ACCESS_KEY and OWNER_EMAIL environment variables.',
-            user.id,
+            '[SUPERADMIN RESET] step=otp_delivery_failed user_id=%s reason=%s. '
+            'Check SMTP_HOST/SMTP_USERNAME/SMTP_PASSWORD/SMTP_FROM_EMAIL environment variables.',
+            user.id, err,
         )
         log_security_event(
-            'sa_pw_reset_w3f_failed', user,
-            f'Web3Forms OTP delivery failed from ip={ip}', 'warning',
+            'sa_otp_send_failed', user,
+            f'Superadmin OTP delivery via SMTP failed from ip={ip}: {err}', 'warning',
         )
 
     return True, generic  # Always generic (anti-enumeration)
@@ -360,8 +368,8 @@ def complete_superadmin_reset(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# B. Admin (tenant admin user) reset — MailerSend via send_otp_email()
-#    DO NOT MODIFY THIS SECTION
+# B. Admin (tenant admin user) reset — MailerSend primary / SMTP fallback
+#    via email_service.send_otp_email(). Structured step logging added v5.7.
 # ─────────────────────────────────────────────────────────────────────────────
 
 def initiate_admin_reset(
@@ -370,8 +378,7 @@ def initiate_admin_reset(
 ) -> tuple[bool, str]:
     """
     Initiate admin (non-superadmin) OTP reset.
-    Delivery: email_service.send_otp_email() → SMTP primary / MailerSend fallback.
-    DO NOT TOUCH — this flow is not in scope for v4.0.
+    Delivery: email_service.send_otp_email() → MailerSend primary / SMTP fallback.
     """
     if not _recovery_enabled():
         return False, 'Password recovery is currently disabled.'
@@ -384,12 +391,14 @@ def initiate_admin_reset(
         return False, 'Username and email are both required.'
 
     user = User.query.filter_by(email=email, username=uname, is_superadmin=False).first()
-    logger.info('[ADMIN RESET] email=%s username=%s found=%s', email, uname, bool(user))
+    logger.info('[ADMIN RESET] step=lookup email=%s username=%s found=%s', email, uname, bool(user))
 
     if not user:
+        logger.info('[ADMIN RESET] step=lookup_miss — returning generic anti-enumeration response')
         return True, generic
 
     ip, ua, ttl = _get_ip(), _get_ua(), _get_ttl_minutes()
+
     raw_otp = create_otp_record(
         user_type='admin',
         user_id=user.id,
@@ -399,6 +408,8 @@ def initiate_admin_reset(
         user_agent=ua,
     )
     db.session.commit()
+    logger.info('[ADMIN RESET] step=otp_generated user_id=%s ttl=%dm', user.id, ttl)
+    log_security_event('admin_otp_generated', user, f'Admin OTP record created from ip={ip}', 'info')
 
     sent = send_otp_email(
         recipient_email=user.email,
@@ -408,22 +419,36 @@ def initiate_admin_reset(
         user_agent=ua,
         ttl_minutes=ttl,
     )
+    logger.info('[ADMIN RESET] step=delivery_result sent=%s user_id=%s', sent, user.id)
 
-    if not sent:
-        logger.error('[ADMIN RESET] OTP email delivery failed for user_id=%s', user.id)
+    if sent:
+        log_security_event('admin_otp_sent', user, f'Admin OTP delivered from ip={ip}', 'info')
+        log_security_event('admin_pw_reset_initiated', user, f'Admin OTP sent from ip={ip}', 'info')
+    else:
+        logger.error(
+            '[ADMIN RESET] step=delivery_failed user_id=%s — both MailerSend and SMTP '
+            'fallback failed. Check MAILERSEND_API_KEY / ADMIN_MAILERSEND_API_KEY and '
+            'SMTP_HOST/SMTP_USERNAME/SMTP_PASSWORD/SMTP_FROM_EMAIL.',
+            user.id,
+        )
+        log_security_event('admin_otp_send_failed', user, f'Admin OTP delivery failed from ip={ip}', 'warning')
 
-    log_security_event('admin_pw_reset_initiated', user, f'Admin OTP sent from ip={ip}', 'info')
     return True, generic
 
 
 def verify_admin_otp(
     submitted_email: str,
     raw_otp: str,
-    tenant_id: str,
+    tenant_id: str | None = None,
 ) -> tuple[bool, str, str | None]:
     """DO NOT TOUCH — admin flow, not in scope for v4.0."""
     email = (submitted_email or '').strip().lower()
-    user  = User.query.filter_by(email=email, tenant_id=tenant_id).first()
+    # tenant_id is optional: when not supplied (e.g. pre-login forgot-password flow),
+    # resolve the user by email alone. Email is unique among non-superadmin users.
+    if tenant_id:
+        user = User.query.filter_by(email=email, tenant_id=tenant_id, is_superadmin=False).first()
+    else:
+        user = User.query.filter_by(email=email, is_superadmin=False).first()
 
     if not user:
         return False, 'Invalid OTP or account.', None
@@ -456,8 +481,7 @@ def complete_admin_reset(token: str, new_password: str) -> tuple[bool, str]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# C. Tenant reset — MailerSend via send_otp_email()
-#    DO NOT MODIFY THIS SECTION
+# C. Tenant reset — MailerSend primary / SMTP fallback via send_otp_email()
 # ─────────────────────────────────────────────────────────────────────────────
 
 def initiate_tenant_reset(
@@ -467,8 +491,7 @@ def initiate_tenant_reset(
 ) -> tuple[bool, str]:
     """
     Initiate tenant OTP reset.
-    Delivery: email_service.send_otp_email() → SMTP primary / MailerSend fallback.
-    DO NOT TOUCH — this flow is not in scope for v4.0.
+    Delivery: email_service.send_otp_email() → MailerSend primary / SMTP fallback.
     """
     if not _recovery_enabled():
         return False, 'Password recovery is currently disabled.'
@@ -484,7 +507,7 @@ def initiate_tenant_reset(
 
     tenant = Tenant.query.filter_by(slug=tenant_slug).first()
     if not tenant:
-        logger.warning('[TENANT RESET] unknown tenant_slug=%s', tenant_slug)
+        logger.warning('[TENANT RESET] step=lookup unknown tenant_slug=%s', tenant_slug)
         return False, generic_err
 
     user = User.query.filter_by(
@@ -494,14 +517,16 @@ def initiate_tenant_reset(
         tenant_id=tenant.id,
     ).first()
 
+    logger.info(
+        '[TENANT RESET] step=lookup username=%s email=%s tenant=%s found=%s',
+        uname, email, tenant_slug, bool(user),
+    )
+
     if not user:
-        logger.warning(
-            '[TENANT RESET] no match username=%s email=%s tenant=%s',
-            uname, email, tenant_slug,
-        )
         return False, generic_err
 
     ip, ua, ttl = _get_ip(), _get_ua(), _get_ttl_minutes()
+
     raw_otp = create_otp_record(
         user_type='tenant',
         user_id=user.id,
@@ -511,6 +536,8 @@ def initiate_tenant_reset(
         user_agent=ua,
     )
     db.session.commit()
+    logger.info('[TENANT RESET] step=otp_generated user_id=%s tenant=%s ttl=%dm', user.id, tenant_slug, ttl)
+    log_security_event('tenant_otp_generated', user, f'Tenant OTP record created from ip={ip}', 'info')
 
     sent = send_otp_email(
         recipient_email=user.email,
@@ -520,17 +547,19 @@ def initiate_tenant_reset(
         user_agent=ua,
         ttl_minutes=ttl,
     )
+    logger.info('[TENANT RESET] step=delivery_result sent=%s user_id=%s tenant=%s', sent, user.id, tenant_slug)
 
-    if not sent:
+    if sent:
+        log_security_event('tenant_otp_sent', user, f'Tenant OTP delivered from ip={ip}', 'info')
+        log_security_event('tenant_pw_reset_initiated', user, f'Tenant OTP sent from ip={ip}', 'info')
+    else:
         logger.error(
-            '[TENANT RESET] OTP email delivery failed for user_id=%s tenant=%s',
+            '[TENANT RESET] step=delivery_failed user_id=%s tenant=%s — both MailerSend '
+            'and SMTP fallback failed.',
             user.id, tenant_slug,
         )
+        log_security_event('tenant_otp_send_failed', user, f'Tenant OTP delivery failed from ip={ip}', 'warning')
 
-    log_security_event(
-        'tenant_pw_reset_initiated', user,
-        f'Tenant OTP sent from ip={ip}', 'info',
-    )
     return True, generic_ok
 
 
