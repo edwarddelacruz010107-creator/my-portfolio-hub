@@ -102,8 +102,8 @@ done\n\
 # Run database migrations (conditional)\n\
 if [ "$RUN_MIGRATIONS" = "true" ]; then\n\
   echo "Running database migrations..."\n\
-  flask db upgrade-core\n\
-  flask db upgrade-tenant\n\
+  flask db upgrade\n\
+  flask create-superadmin\n\
 fi\n\
 \n\
 # Start application\n\
